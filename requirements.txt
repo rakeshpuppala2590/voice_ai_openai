@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+twilio
+google-cloud-storage
+openai
+python-dotenv
+pytest
