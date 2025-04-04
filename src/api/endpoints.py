@@ -4,8 +4,19 @@ from src.core.twilio_handler import TwilioHandler
 from twilio.twiml.voice_response import VoiceResponse, Gather
 import logging
 
+# Create logger for webhook handling
+logger = logging.getLogger("webhook")
+
+from src.services.storage_service import StorageService
+
+# Add to existing imports
+storage_service = StorageService()
+
 # Configure logging to only show ERROR level messages
-logging.basicConfig(level=logging.ERROR)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 # Create our own logger for conversation
 conversation_logger = logging.getLogger("conversation")
@@ -58,6 +69,7 @@ async def handle_twilio_call(request: Request):
 
 @router.post("/twilio/webhook")
 async def handle_twilio_webhook(
+    request: Request,
     CallSid: str = Form(...),
     RecordingUrl: str = Form(None),
     RecordingStatus: str = Form(None),
@@ -66,9 +78,132 @@ async def handle_twilio_webhook(
 ):
     """Handle Twilio webhooks for recordings and transcriptions"""
     try:
+        logger.info(f"Received webhook for call {CallSid}")
+        
+        # Get conversation history and metadata
+        conversation_data = {
+            "call_sid": CallSid,
+            "transcript": twilio_handler.openai_service.conversation_history,
+            "collected_info": twilio_handler.openai_service.collected_info,
+            "recording_url": RecordingUrl,
+            "recording_status": RecordingStatus,
+            "transcription_text": TranscriptionText,
+            "transcription_status": TranscriptionStatus
+        }
+        
+        # Store in GCS
+        storage_result = storage_service.store_conversation(CallSid, conversation_data)
+        logger.info(f"Stored conversation data: {storage_result}")
+        
+        return {
+            "status": "success",
+            "message": "Conversation stored successfully",
+            "storage_locations": storage_result
+        }
+        
+    except Exception as e:
+        logger.error(f"Webhook error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/voice/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy"}
+
+
+@router.post("/twilio/gather")
+async def handle_gather(
+    request: Request,
+    SpeechResult: str = Form(None),
+    Confidence: float = Form(None)
+):
+    """Handle gathered speech input from Twilio"""
+    try:
+        logger.debug(f"Received gather webhook with speech: {SpeechResult}, confidence: {Confidence}")
+        response = VoiceResponse()
+        
+        if SpeechResult:
+            logger.info(f"\n🗣️  User: {SpeechResult}")
+            
+            try:
+                # Get AI response
+                logger.debug("Getting AI response")
+                ai_response = twilio_handler.openai_service.get_response(SpeechResult)
+                logger.info(f"🤖  Bot: {ai_response}\n")
+                
+                # Create gather with AI response
+                gather = Gather(
+                    input='speech',
+                    timeout=3,
+                    action='/api/v1/twilio/gather',
+                    method='POST',
+                    language='en-US'
+                )
+                gather.say(ai_response, voice="alice", language="en-US")
+                response.append(gather)
+                
+                # Add a redirect for no input
+                response.redirect('/api/v1/twilio/gather', method='POST')
+                
+            except Exception as e:
+                logger.error(f"Error processing AI response: {str(e)}")
+                gather = Gather(
+                    input='speech',
+                    timeout=3,
+                    action='/api/v1/twilio/gather',
+                    method='POST',
+                    language='en-US'
+                )
+                gather.say("I'm sorry, I had trouble processing that. Could you please repeat?", voice="alice", language="en-US")
+                response.append(gather)
+        else:
+            gather = Gather(
+                input='speech',
+                timeout=3,
+                action='/api/v1/twilio/gather',
+                method='POST',
+                language='en-US'
+            )
+            gather.say("I didn't catch that. Could you please repeat?", voice="alice", language="en-US")
+            response.append(gather)
+            
+        final_response = str(response)
+        logger.debug(f"Final TwiML response: {final_response}")
+        return Response(content=final_response, media_type="application/xml")
+        
+    except Exception as e:
+        logger.error(f"Critical error in gather handler: {str(e)}")
+        error_response = VoiceResponse()
+        error_response.say("I apologize, but I'm having trouble understanding. Let's start over.", voice="alice")
+        error_response.redirect('/api/v1/twilio/voice', method='POST')
+        return Response(content=str(error_response), media_type="application/xml")
+
+
+
+@router.post("/twilio/webhook")
+async def handle_twilio_webhook(
+    CallSid: str = Form(...),
+    RecordingUrl: str = Form(None),
+    RecordingStatus: str = Form(None),
+    TranscriptionText: str = Form(None),
+    TranscriptionStatus: str = Form(None)
+):
+    """Handle Twilio webhooks for recordings and transcriptions"""
+    try:
+        # Get conversation history from OpenAI service
+        conversation_data = {
+            "transcript": twilio_handler.openai_service.conversation_history,
+            "collected_info": twilio_handler.openai_service.collected_info,
+            "audio_url": RecordingUrl
+        }
+        
+        # Store conversation in GCS
+        storage_result = storage_service.store_conversation(CallSid, conversation_data)
+        
         response = {
             "call_sid": CallSid,
-            "status": "received"
+            "status": "received",
+            "storage": storage_result
         }
         
         if RecordingUrl:
@@ -83,68 +218,40 @@ async def handle_twilio_webhook(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/voice/health")
-async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy"}
-
-@router.post("/twilio/gather")
-async def handle_gather(
+@router.post("/twilio/recording-status")
+async def handle_recording_status(
     request: Request,
-    step: str = None,
-    SpeechResult: str = Form(None),
-    Confidence: float = Form(None)
+    CallSid: str = Form(...),
+    RecordingSid: str = Form(...),
+    RecordingStatus: str = Form(...),
+    RecordingUrl: str = Form(None),
 ):
-    """Handle gathered speech input from Twilio"""
+    """Handle recording status updates from Twilio"""
     try:
-        # Only print conversation related information
-        if step == "name" and SpeechResult:
-            conversation_logger.info("\n🗣️  User: " + SpeechResult)
-            conversation_logger.info("🤖  Bot: Thank you! Please tell me your phone number.\n")
-            
-        elif step == "number" and SpeechResult:
-            conversation_logger.info("\n🗣️  User: " + SpeechResult)
-            conversation_logger.info("🤖  Bot: Thank you for providing your information. Have a great day!\n")
-            
-        # Generate the TwiML response
-        response = VoiceResponse()
+        logger.info(f"Recording status update for call {CallSid}: {RecordingStatus}")
         
-        if step == "name" and SpeechResult:
-            response.say(f"Thank you, {SpeechResult}.", voice="alice")
-            gather = Gather(
-                input='speech',
-                timeout=5,
-                action='/api/v1/twilio/gather?step=number',
-                method='POST',
-                language='en-US'
-            )
-            gather.say("Please tell me your phone number.", voice="alice")
-            response.append(gather)
+        if RecordingStatus == "completed" and RecordingUrl:
+            # Store recording in GCS
+            conversation_data = {
+                "call_sid": CallSid,
+                "transcript": twilio_handler.openai_service.conversation_history,
+                "collected_info": twilio_handler.openai_service.collected_info,
+                "recording_url": RecordingUrl,
+                "recording_sid": RecordingSid
+            }
             
-        elif step == "number" and SpeechResult:
-            response.say(
-                f"Thank you. I have your phone number as {SpeechResult}. "
-                "Thank you for providing your information. Have a great day!",
-                voice="alice"
-            )
+            # Store in GCS
+            storage_result = storage_service.store_conversation(CallSid, conversation_data)
+            logger.info(f"Stored recording: {storage_result}")
             
-        else:
-            conversation_logger.info("\n🤖  Bot: Welcome! Please tell me your name.\n")
-            response.say("I'm sorry, I didn't catch that. Let's start over.", voice="alice")
-            gather = Gather(
-                input='speech',
-                timeout=5,
-                action='/api/v1/twilio/gather?step=name',
-                method='POST',
-                language='en-US'
-            )
-            gather.say("Please tell me your name.", voice="alice")
-            response.append(gather)
+            return {
+                "status": "success",
+                "message": "Recording stored successfully",
+                "storage_locations": storage_result
+            }
         
-        return Response(content=str(response), media_type="application/xml")
+        return {"status": "received", "recording_status": RecordingStatus}
         
     except Exception as e:
-        conversation_logger.error(f"\n❌  Error: {str(e)}\n")
-        error_response = VoiceResponse()
-        error_response.say("We're sorry, there was an error. Please try again later.", voice="alice")
-        return Response(content=str(error_response), media_type="application/xml")
+        logger.error(f"Recording status webhook error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -3,6 +3,7 @@ from .endpoints import (
     handle_voice_input, 
     handle_twilio_call, 
     handle_twilio_webhook, 
+    handle_recording_status,
     handle_gather,
     health_check
 )
@@ -14,3 +15,4 @@ router.add_api_route("/twilio/voice", handle_twilio_call, methods=["POST"])
 router.add_api_route("/twilio/webhook", handle_twilio_webhook, methods=["POST"])
 router.add_api_route("/twilio/gather", handle_gather, methods=["POST"])
 router.add_api_route("/voice/health", health_check, methods=["GET"])
+router.add_api_route("/twilio/recording-status", handle_recording_status, methods=["POST"])
