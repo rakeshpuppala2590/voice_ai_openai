@@ -3,6 +3,7 @@ from pydantic import BaseModel, HttpUrl
 from src.core.twilio_handler import TwilioHandler
 from twilio.twiml.voice_response import VoiceResponse, Gather
 import logging
+import datetime
 
 # Create logger for webhook handling
 logger = logging.getLogger("webhook")
@@ -142,7 +143,7 @@ async def handle_gather(
                 
                 # Start recording via the API directly - this is more reliable than TwiML
                 recording = client.calls(CallSid).recordings.create(
-                    recording_status_callback='https://7949-2603-8000-5803-1e47-68f8-f199-ac2f-d030.ngrok-free.app/api/v1/twilio/recording-status',
+                    recording_status_callback='https://f767-2603-8000-5803-1e47-68f8-f199-ac2f-d030.ngrok-free.app/api/v1/twilio/recording-status',
                     recording_status_callback_method='POST',
                 )
                 
@@ -263,13 +264,13 @@ async def handle_recording_status(request: Request):
         print(f"📄 Body: {body.decode('utf-8')}")
         print("================================================")
         
-        # Rest of your function remains the same
         # Parse form data
         form_data = await request.form()
         CallSid = form_data.get("CallSid", "")
         RecordingSid = form_data.get("RecordingSid", "")
         RecordingStatus = form_data.get("RecordingStatus", "")
         RecordingUrl = form_data.get("RecordingUrl", "")
+        RecordingDuration = form_data.get("RecordingDuration", "")
         
         logger.info(f"Recording status callback received: CallSid={CallSid}, RecordingSid={RecordingSid}, RecordingStatus={RecordingStatus}, RecordingUrl={RecordingUrl}")
         print(f"📞 Recording status: {RecordingStatus} for call {CallSid}")
@@ -277,27 +278,34 @@ async def handle_recording_status(request: Request):
         if RecordingStatus == "completed" and RecordingUrl:
             print(f"✅ Recording complete! URL: {RecordingUrl}")
             
-            # Create a directory to store recordings locally
-            storage_dir = "./recordings"
-            os.makedirs(storage_dir, exist_ok=True)
-            
-            # Download the recording
+            # Store recording data in GCS
             try:
-                recording_url_with_extension = f"{RecordingUrl}.mp3"
-                storage_path = f"{storage_dir}/{RecordingSid}.mp3"
+                # Get conversation transcript from the handler
+                transcript = []
+                if CallSid in twilio_handler.recording_started:
+                    # Try to get the conversation history for this call
+                    if hasattr(twilio_handler.openai_service, 'conversation_history'):
+                        transcript = twilio_handler.openai_service.conversation_history
                 
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(recording_url_with_extension) as response:
-                        if response.status == 200:
-                            with open(storage_path, "wb") as f:
-                                f.write(await response.read())
-                            print(f"✅ Recording downloaded to {storage_path}")
-                            logger.info(f"Recording downloaded to {storage_path}")
-                        else:
-                            logger.error(f"Failed to download recording. Status: {response.status}")
+                # Create recording metadata object
+                recording_data = {
+                    "call_sid": CallSid,
+                    "recording_sid": RecordingSid,
+                    "recording_url": f"{RecordingUrl}.mp3",  # Add mp3 extension for proper access
+                    "status": RecordingStatus,
+                    "duration": RecordingDuration,
+                    "timestamp": str(datetime.datetime.now()),
+                    "transcript": transcript
+                }
+                
+                # Store metadata in GCS
+                storage_result = storage_service.store_recording_metadata(CallSid, recording_data)
+                print(f"✅ Recording metadata and transcript stored in GCS: {storage_result}")
+                logger.info(f"Recording metadata and transcript stored in GCS: {storage_result}")
+                
             except Exception as e:
-                logger.error(f"Error downloading recording: {str(e)}")
-                print(f"❌ Error downloading recording: {str(e)}")
+                logger.error(f"Error storing recording metadata: {str(e)}")
+                print(f"❌ Error storing recording metadata: {str(e)}")
         
         # Return a valid TwiML response
         return Response(content="<Response></Response>", media_type="application/xml")
@@ -306,7 +314,6 @@ async def handle_recording_status(request: Request):
         logger.error(f"Error in recording status callback: {str(e)}")
         print(f"❌ Error processing recording status: {str(e)}")
         return Response(content="<Response><Say>There was an error processing the recording status.</Say></Response>", media_type="application/xml")
-    
 @router.post("/twilio/test-recording")
 async def test_recording():
     """Test endpoint that only does recording"""
@@ -337,7 +344,7 @@ async def start_recording(
         
         # Start recording via the API
         recording = client.calls(CallSid).recordings.create(
-            recording_status_callback='https://7949-2603-8000-5803-1e47-68f8-f199-ac2f-d030.ngrok-free.app/api/v1/twilio/recording-status',
+            recording_status_callback='https://f767-2603-8000-5803-1e47-68f8-f199-ac2f-d030.ngrok-free.app/api/v1/twilio/recording-status',
             recording_status_callback_method='POST',
         )
         

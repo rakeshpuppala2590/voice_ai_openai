@@ -16,6 +16,54 @@ class StorageService:
             os.getenv('TWILIO_AUTH_TOKEN')
         )
 
+    import datetime
+    import json
+
+    def store_recording_metadata(self, call_sid, recording_data):
+        """
+        Store recording metadata and transcript in GCS bucket
+        
+        Args:
+            call_sid (str): The Twilio call SID
+            recording_data (dict): Recording metadata including transcript
+            
+        Returns:
+            dict: Information about the storage operation
+        """
+        try:
+            # Create unique paths for the recording metadata and transcript
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            base_path = f"calls/{call_sid}"
+            metadata_path = f"{base_path}/recording_{timestamp}.json"
+            
+            # Upload metadata as JSON (includes transcript)
+            metadata_blob = self.storage.bucket.blob(metadata_path)
+            metadata_blob.upload_from_string(
+                json.dumps(recording_data, indent=2),
+                content_type="application/json"
+            )
+            
+            # Create a reference file that points to the Twilio recording URL
+            audio_reference_path = f"{base_path}/audio_reference_{timestamp}.txt"
+            audio_reference_blob = self.storage.bucket.blob(audio_reference_path)
+            audio_reference_blob.upload_from_string(
+                recording_data.get("recording_url", "No URL available"),
+                content_type="text/plain"
+            )
+            
+            return {
+                "status": "success",
+                "metadata_path": metadata_path,
+                "audio_reference_path": audio_reference_path,
+                "metadata_url": metadata_blob.public_url,
+                "audio_reference_url": audio_reference_blob.public_url
+            }
+        except Exception as e:
+            logger.error(f"Error storing recording metadata: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
     def store_conversation(self, call_sid: str, conversation_data: dict) -> dict:
         """Store conversation transcript and metadata"""
         try:
