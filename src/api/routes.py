@@ -6,7 +6,8 @@ from .endpoints import (
     handle_recording_status,
     handle_gather,
     health_check,
-    test_recording
+    test_recording,
+    test_openai
 )
 
 router = APIRouter()
@@ -18,3 +19,4 @@ router.add_api_route("/twilio/gather", handle_gather, methods=["POST"])
 router.add_api_route("/voice/health", health_check, methods=["GET"])
 router.add_api_route("/twilio/recording-status", handle_recording_status, methods=["POST"])
 router.add_api_route("/twilio/test-recording", test_recording, methods=["POST"])
+router.add_api_route("/openai/test-openai", test_openai, methods=["GET"])

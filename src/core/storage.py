@@ -17,25 +17,27 @@ class CloudStorage:
     def __init__(self):
         try:
             # Get credentials path
-            creds_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-            if not creds_path:
-                raise ValueError("GOOGLE_APPLICATION_CREDENTIALS not set in environment variables")
+
+
+            # creds_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+            # if not creds_path:
+            #     raise ValueError("GOOGLE_APPLICATION_CREDENTIALS not set in environment variables")
             
             # Convert relative path to absolute if needed
-            if not os.path.isabs(creds_path):
-                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-                creds_path = os.path.join(base_dir, 'gcs-credentials.json')  # Use the new credentials file
+            # if not os.path.isabs(creds_path):
+            #     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            #     creds_path = os.path.join(base_dir, 'gcs-credentials.json')  # Use the new credentials file
             
-            if not os.path.exists(creds_path):
-                raise FileNotFoundError(f"Credentials file not found at: {creds_path}")
+            # if not os.path.exists(creds_path):
+            #     raise FileNotFoundError(f"Credentials file not found at: {creds_path}")
 
-            logger.info(f"Loading credentials from: {creds_path}")
+            # logger.info(f"Loading credentials from: {creds_path}")
             
             # Initialize with explicit credentials
-            credentials = service_account.Credentials.from_service_account_file(
-                creds_path,
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            )
+            # credentials = service_account.Credentials.from_service_account_file(
+            #     creds_path,
+            #     scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            # )
             
             # Get project ID and bucket name
             self.project_id = os.getenv('GCS_PROJECT_ID')
@@ -48,7 +50,7 @@ class CloudStorage:
             
             # Initialize storage client
             self.client = storage.Client(
-                credentials=credentials,
+                # credentials=credentials,
                 project=self.project_id
             )
             

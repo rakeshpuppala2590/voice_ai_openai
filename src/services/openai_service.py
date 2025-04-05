@@ -2,7 +2,10 @@ from typing import List, Dict
 import os
 import requests
 import logging
+import time
 from openai import OpenAI
+import requests.adapters
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
@@ -117,3 +120,6 @@ class OpenAIService:
     def is_conversation_complete(self) -> bool:
         """Check if we have all required information"""
         return all(value is not None for value in self.collected_info.values())
+
+
+

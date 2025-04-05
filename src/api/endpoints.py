@@ -143,7 +143,7 @@ async def handle_gather(
                 
                 # Start recording via the API directly - this is more reliable than TwiML
                 recording = client.calls(CallSid).recordings.create(
-                    recording_status_callback='https://f767-2603-8000-5803-1e47-68f8-f199-ac2f-d030.ngrok-free.app/api/v1/twilio/recording-status',
+                    recording_status_callback='https://conv-ai-1018103016475.us-central1.run.app/api/v1/twilio/recording-status',
                     recording_status_callback_method='POST',
                 )
                 
@@ -344,7 +344,7 @@ async def start_recording(
         
         # Start recording via the API
         recording = client.calls(CallSid).recordings.create(
-            recording_status_callback='https://f767-2603-8000-5803-1e47-68f8-f199-ac2f-d030.ngrok-free.app/api/v1/twilio/recording-status',
+            recording_status_callback='https://conv-ai-1018103016475.us-central1.run.app/api/v1/twilio/recording-status',
             recording_status_callback_method='POST',
         )
         
@@ -360,3 +360,25 @@ async def start_recording(
         response = VoiceResponse()
         response.say("Could not start recording.")
         return Response(content=str(response), media_type="application/xml")
+
+@router.get("/test-openai")
+async def test_openai():
+    from openai import OpenAI
+    import os, traceback
+
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
+        return {"error": "OPENAI_API_KEY is not set."}
+
+    try:
+        client = OpenAI(api_key=key)
+        res = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": "Test connection"}]
+        )
+        return {"response": res.choices[0].message.content}
+    except Exception as e:
+        return {
+            "error": str(e),
+            "trace": traceback.format_exc()
+        }
