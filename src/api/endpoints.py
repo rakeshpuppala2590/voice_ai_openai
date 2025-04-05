@@ -57,19 +57,16 @@ async def handle_voice_input(voice_input: VoiceInput):
 
 @router.post("/twilio/voice")
 async def handle_twilio_call(request: Request):
-    """Handle incoming Twilio voice calls"""
     try:
-        form_data = await request.form()
         response = twilio_handler.handle_voice_call(request)
         return Response(content=response, media_type="application/xml")
     except Exception as e:
         error_response = VoiceResponse()
         error_response.say("We're sorry, but there was an error processing your call.")
         return Response(content=str(error_response), media_type="application/xml")
-
+    
 @router.post("/twilio/webhook")
 async def handle_twilio_webhook(
-    request: Request,
     CallSid: str = Form(...),
     RecordingUrl: str = Form(None),
     RecordingStatus: str = Form(None),
@@ -95,6 +92,7 @@ async def handle_twilio_webhook(
         storage_result = storage_service.store_conversation(CallSid, conversation_data)
         logger.info(f"Stored conversation data: {storage_result}")
         
+        # Return a response as JSON
         return {
             "status": "success",
             "message": "Conversation stored successfully",
@@ -111,16 +109,49 @@ async def health_check():
     return {"status": "healthy"}
 
 
+
 @router.post("/twilio/gather")
 async def handle_gather(
     request: Request,
+    CallSid: str = Form(...),
     SpeechResult: str = Form(None),
     Confidence: float = Form(None)
 ):
     """Handle gathered speech input from Twilio"""
     try:
         logger.debug(f"Received gather webhook with speech: {SpeechResult}, confidence: {Confidence}")
+        print(f"⚡ Gather webhook received: CallSid={CallSid}, Speech={SpeechResult}")
+        
         response = VoiceResponse()
+        
+        # Check if recording has been started for this call
+        if CallSid not in twilio_handler.recording_started:
+            print(f"🎙️ First gather for CallSid {CallSid} - starting recording via API")
+            
+            # Use the API approach to start recording instead of TwiML
+            try:
+                # Import necessary modules
+                from twilio.rest import Client
+                import os
+                
+                # Initialize Twilio client
+                client = Client(
+                    os.getenv('TWILIO_ACCOUNT_SID'),
+                    os.getenv('TWILIO_AUTH_TOKEN')
+                )
+                
+                # Start recording via the API directly - this is more reliable than TwiML
+                recording = client.calls(CallSid).recordings.create(
+                    recording_status_callback='https://7949-2603-8000-5803-1e47-68f8-f199-ac2f-d030.ngrok-free.app/api/v1/twilio/recording-status',
+                    recording_status_callback_method='POST',
+                )
+                
+                print(f"🎙️ Started recording via API: {recording.sid}")
+                twilio_handler.recording_started[CallSid] = True
+                logger.info(f"Started recording for call {CallSid} with RecordingSid {recording.sid}")
+            except Exception as e:
+                print(f"❌ Error starting recording via API: {str(e)}")
+                logger.error(f"Error starting recording via API: {str(e)}")
         
         if SpeechResult:
             logger.info(f"\n🗣️  User: {SpeechResult}")
@@ -178,8 +209,6 @@ async def handle_gather(
         error_response.redirect('/api/v1/twilio/voice', method='POST')
         return Response(content=str(error_response), media_type="application/xml")
 
-
-
 @router.post("/twilio/webhook")
 async def handle_twilio_webhook(
     CallSid: str = Form(...),
@@ -218,40 +247,109 @@ async def handle_twilio_webhook(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+import aiohttp
+import os
+
+from fastapi.responses import Response
+
 @router.post("/twilio/recording-status")
-async def handle_recording_status(
-    request: Request,
-    CallSid: str = Form(...),
-    RecordingSid: str = Form(...),
-    RecordingStatus: str = Form(...),
-    RecordingUrl: str = Form(None),
-):
-    """Handle recording status updates from Twilio"""
+async def handle_recording_status(request: Request):
     try:
-        logger.info(f"Recording status update for call {CallSid}: {RecordingStatus}")
+        # Log ALL request headers and body
+        print("=== TWILIO RECORDING STATUS CALLBACK RECEIVED ===")
+        headers = {k: v for k, v in request.headers.items()}
+        print(f"🔍 Headers: {headers}")
+        body = await request.body()
+        print(f"📄 Body: {body.decode('utf-8')}")
+        print("================================================")
+        
+        # Rest of your function remains the same
+        # Parse form data
+        form_data = await request.form()
+        CallSid = form_data.get("CallSid", "")
+        RecordingSid = form_data.get("RecordingSid", "")
+        RecordingStatus = form_data.get("RecordingStatus", "")
+        RecordingUrl = form_data.get("RecordingUrl", "")
+        
+        logger.info(f"Recording status callback received: CallSid={CallSid}, RecordingSid={RecordingSid}, RecordingStatus={RecordingStatus}, RecordingUrl={RecordingUrl}")
+        print(f"📞 Recording status: {RecordingStatus} for call {CallSid}")
         
         if RecordingStatus == "completed" and RecordingUrl:
-            # Store recording in GCS
-            conversation_data = {
-                "call_sid": CallSid,
-                "transcript": twilio_handler.openai_service.conversation_history,
-                "collected_info": twilio_handler.openai_service.collected_info,
-                "recording_url": RecordingUrl,
-                "recording_sid": RecordingSid
-            }
+            print(f"✅ Recording complete! URL: {RecordingUrl}")
             
-            # Store in GCS
-            storage_result = storage_service.store_conversation(CallSid, conversation_data)
-            logger.info(f"Stored recording: {storage_result}")
+            # Create a directory to store recordings locally
+            storage_dir = "./recordings"
+            os.makedirs(storage_dir, exist_ok=True)
             
-            return {
-                "status": "success",
-                "message": "Recording stored successfully",
-                "storage_locations": storage_result
-            }
+            # Download the recording
+            try:
+                recording_url_with_extension = f"{RecordingUrl}.mp3"
+                storage_path = f"{storage_dir}/{RecordingSid}.mp3"
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(recording_url_with_extension) as response:
+                        if response.status == 200:
+                            with open(storage_path, "wb") as f:
+                                f.write(await response.read())
+                            print(f"✅ Recording downloaded to {storage_path}")
+                            logger.info(f"Recording downloaded to {storage_path}")
+                        else:
+                            logger.error(f"Failed to download recording. Status: {response.status}")
+            except Exception as e:
+                logger.error(f"Error downloading recording: {str(e)}")
+                print(f"❌ Error downloading recording: {str(e)}")
         
-        return {"status": "received", "recording_status": RecordingStatus}
+        # Return a valid TwiML response
+        return Response(content="<Response></Response>", media_type="application/xml")
         
     except Exception as e:
-        logger.error(f"Recording status webhook error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error in recording status callback: {str(e)}")
+        print(f"❌ Error processing recording status: {str(e)}")
+        return Response(content="<Response><Say>There was an error processing the recording status.</Say></Response>", media_type="application/xml")
+    
+@router.post("/twilio/test-recording")
+async def test_recording():
+    """Test endpoint that only does recording"""
+    response = VoiceResponse()
+    response.say("This is a test recording. Please speak for a few seconds.")
+    
+    # Create the recording
+    twilio_handler.create_recording(response)
+    
+    response.say("Thank you for recording. Goodbye.")
+    
+    return Response(content=str(response), media_type="application/xml")
+
+@router.post("/twilio/start-recording")
+async def start_recording(
+    CallSid: str = Form(...),
+):
+    """Start recording a call using the Twilio API directly"""
+    try:
+        from twilio.rest import Client
+        import os
+        
+        # Initialize Twilio client
+        client = Client(
+            os.getenv('TWILIO_ACCOUNT_SID'),
+            os.getenv('TWILIO_AUTH_TOKEN')
+        )
+        
+        # Start recording via the API
+        recording = client.calls(CallSid).recordings.create(
+            recording_status_callback='https://7949-2603-8000-5803-1e47-68f8-f199-ac2f-d030.ngrok-free.app/api/v1/twilio/recording-status',
+            recording_status_callback_method='POST',
+        )
+        
+        print(f"🎙️ Started recording via API: {recording.sid}")
+        
+        # Return a valid TwiML response
+        response = VoiceResponse()
+        response.say("Recording started.")
+        return Response(content=str(response), media_type="application/xml")
+    except Exception as e:
+        logger.error(f"Error starting recording: {str(e)}")
+        print(f"❌ Error starting recording: {str(e)}")
+        response = VoiceResponse()
+        response.say("Could not start recording.")
+        return Response(content=str(response), media_type="application/xml")
