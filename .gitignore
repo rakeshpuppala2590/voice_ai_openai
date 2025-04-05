@@ -1,2 +1,4 @@
 .env
 gcs-credentials.jsongcs-credentials.json
+*.json
+!keepfile.json
