@@ -80,6 +80,8 @@ class RealtimeStorageService:
             
         except Exception as e:
             logger.error(f"Error storing realtime conversation: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
                 "success": False,
                 "error": str(e)
@@ -87,28 +89,22 @@ class RealtimeStorageService:
         
     def _create_transcript_from_history(self, conversation_history: list) -> str:
         """Convert conversation history to a readable transcript format"""
-        transcript_lines = []
+        formatted_turns = []
         
         for entry in conversation_history:
-            speaker = "🤖 AI" if entry["role"] == "assistant" else "👤 User"
+            # Use clear speaker labels without emojis
+            speaker = "AI" if entry["role"] == "assistant" else "User"
             text = entry.get("content", "")
             timestamp = datetime.now().strftime("%H:%M:%S")
-            transcript_lines.append(f"[{timestamp}] {speaker}: {text}")
+            
+            # Format each message with proper spacing and clear speaker identification
+            formatted_turn = f"[{timestamp}] {speaker}:\n{text}"
+            formatted_turns.append(formatted_turn)
         
-        return "\n\n".join(transcript_lines)
+        # Join with double newlines for better readability
+        return "\n\n".join(formatted_turns)
     
-    def _store_audio_chunks(self, call_sid: str, timestamp: str, audio_chunks: list) -> str:
-        """
-        Combine and store audio chunks as a WAV file
-        
-        Args:
-            call_sid: The call SID
-            timestamp: Timestamp string for the filename
-            audio_chunks: List of base64 encoded g711_ulaw audio chunks
-        
-        Returns:
-            str: URL of the stored audio file
-        """
+    def _store_audio_chunks(self, call_sid: str, timestamp: str, audio_chunks: list) -> dict:
         try:
             # Debug info
             logger.info(f"Storing {len(audio_chunks)} audio chunks for call {call_sid}")
@@ -129,15 +125,43 @@ class RealtimeStorageService:
             audio_path = f"audio/{call_sid}/{timestamp}_raw.ul"
             logger.info(f"Storing audio at path: {audio_path}")
             
-            audio_url = self.storage_service.storage.store_file(
+            raw_audio_url = self.storage_service.storage.store_file(  # Fixed variable name
                 audio_path, 
                 combined_audio, 
                 content_type="audio/basic"
             )
             
-            logger.info(f"Stored audio at: {audio_url}")
-            return audio_url
-            
+            # 2. Convert to WAV format and store
+            try:
+                from src.utils.audio_converter import convert_ulaw_to_wav
+                
+                # Convert the combined audio to WAV format
+                wav_data = convert_ulaw_to_wav(combined_audio)
+                
+                # Store WAV file
+                wav_audio_path = f"audio/{call_sid}/{timestamp}.wav"
+                logger.info(f"Storing WAV audio at path: {wav_audio_path}")
+                
+                wav_audio_url = self.storage_service.storage.store_file(
+                    wav_audio_path,
+                    wav_data,
+                    content_type="audio/wav"
+                )
+                
+                logger.info(f"Stored WAV audio at: {wav_audio_url}")
+                
+                return {
+                    "raw_url": raw_audio_url,  # Fixed variable name
+                    "wav_url": wav_audio_url
+                }
+            except Exception as e:
+                logger.warning(f"Failed to convert to WAV format: {str(e)}")
+                # Return just the raw URL if conversion fails
+                return {
+                    "raw_url": raw_audio_url,  # Fixed variable name
+                    "wav_url": None
+                }
+                
         except Exception as e:
             logger.error(f"Error storing audio chunks: {str(e)}")
             import traceback
