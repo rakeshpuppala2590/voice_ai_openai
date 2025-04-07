@@ -91,7 +91,11 @@ class WebSocketManager:
             return
         
         # Initialize audio chunks list for this call
-        self.audio_chunks[call_sid] = []
+        if call_sid not in self.audio_chunks:
+            self.audio_chunks[call_sid] = {
+                "user": [],
+                "assistant": []
+        }
         
         try:
             # Wait for OpenAI connection to be established
@@ -114,7 +118,7 @@ class WebSocketManager:
                     }
                     
                     # Store the audio chunk for later persistence
-                    self.audio_chunks[call_sid].append(audio_data)
+                    self.audio_chunks[call_sid]["assistant"].append(audio_data)
                     
                     # Use asyncio.create_task to handle the async send operation
                     asyncio.create_task(websocket.send_json(message))
@@ -136,6 +140,7 @@ class WebSocketManager:
                         # Process the audio data
                         audio_payload = data['media']['payload']
                         
+                        self.audio_chunks[call_sid]["user"].append(audio_payload)
                         # Send to OpenAI
                         await realtime_service.process_audio_chunk(audio_payload)
                     
@@ -158,7 +163,7 @@ class WebSocketManager:
                 try:
                     if realtime_service.conversation_history:
                         # Get audio chunks if any
-                        audio_chunks = self.audio_chunks.get(call_sid, [])
+                        audio_chunks = self.audio_chunks.get(call_sid, {"user": [], "assistant": []})
                         
                         # Store conversation data
                         storage_result = await self.realtime_storage_service.store_realtime_conversation(

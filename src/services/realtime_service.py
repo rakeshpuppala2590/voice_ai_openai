@@ -65,13 +65,24 @@ class RealtimeService:
             session_update = {
                 "type": "session.update",
                 "session": {
-                    "turn_detection": {"type": "server_vad"},
+                    "turn_detection": {"type": "server_vad",
+                                    #    "eagerness": "low",
+                                    #    "eagerness": "medium",
+                    #                    "create_response": True,
+                    # "interrupt_response": False 
+                    },
                     "input_audio_format": "g711_ulaw",  # Format Twilio uses
                     "output_audio_format": "g711_ulaw",
                     "voice": self.voice,
                     "instructions": self.system_message,
                     "modalities": ["text", "audio"],
                     "temperature": 0.7,
+                    # Add input audio transcription options
+                    # "input_audio_transcription": {
+                    #     "enable_interim_results": True,  # Enable interim transcription results
+                    #     "model": "whisper-1"  # Explicitly set the transcription model
+
+                    # }
                 }
             }
             
@@ -210,6 +221,9 @@ class RealtimeService:
             logger.error("Cannot listen for events: WebSocket not connected")
             return
         
+        # Track transcripts by item_id
+        transcripts_by_item = {}
+        
         try:
             async for message in self.ws_connection:
                 event = json.loads(message)
@@ -234,25 +248,62 @@ class RealtimeService:
                             self.conversation_history.append({"role": "assistant", "content": event['delta']})
                         else:
                             self.conversation_history[-1]["content"] += event['delta']
+                        logger.debug(f"Added assistant transcript: {event['delta']}")
                 
                 # Handle user's speech transcript
                 elif event.get('type') == 'conversation.item.input_audio_transcription.delta':
-                    if 'delta' in event:
-                        # Add user speech to conversation history
-                        if not self.conversation_history or self.conversation_history[-1]["role"] != "user":
-                            self.conversation_history.append({"role": "user", "content": event['delta']})
+                    if 'delta' in event and 'item_id' in event:
+                        item_id = event['item_id']
+                        delta = event['delta']
+                        logger.info(f"User transcript delta for item {item_id}: {delta}")
+                        
+                        # Track transcripts by item_id to handle interim results better
+                        if item_id not in transcripts_by_item:
+                            transcripts_by_item[item_id] = delta
                         else:
-                            self.conversation_history[-1]["content"] += event['delta']
+                            transcripts_by_item[item_id] += delta
+                        
+                        # Also update conversation history
+                        if not self.conversation_history or self.conversation_history[-1]["role"] != "user":
+                            self.conversation_history.append({"role": "user", "content": delta})
+                        else:
+                            self.conversation_history[-1]["content"] += delta
+                        logger.debug(f"Added user transcript delta: {delta}")
                 
                 # Handle completed transcription
                 elif event.get('type') == 'conversation.item.input_audio_transcription.completed':
-                    if 'transcript' in event:
-                        # Ensure we have a complete transcript in the history
+                    if 'transcript' in event and 'item_id' in event:
+                        item_id = event['item_id']
                         transcript = event['transcript']
-                        if not any(entry["role"] == "user" and entry["content"] == transcript for entry in self.conversation_history):
-                            self.conversation_history.append({"role": "user", "content": transcript})
-        
-
+                        logger.info(f"Received complete user transcript for item {item_id}: {transcript}")
+                        
+                        # Update our item-based tracking
+                        transcripts_by_item[item_id] = transcript
+                        
+                        # Check if we already have this exact transcript
+                        transcript_exists = False
+                        for i, entry in enumerate(self.conversation_history):
+                            if entry["role"] == "user":
+                                # If we already have a partial transcript for this item,
+                                # replace it with the complete one
+                                if entry.get('item_id') == item_id:
+                                    self.conversation_history[i]["content"] = transcript
+                                    transcript_exists = True
+                                    break
+                                # Or if we happen to have the exact content already
+                                elif entry["content"] == transcript:
+                                    transcript_exists = True
+                                    break
+                        
+                        # Add transcript if it doesn't exist yet
+                        if not transcript_exists:
+                            self.conversation_history.append({
+                                "role": "user", 
+                                "content": transcript,
+                                "item_id": item_id
+                            })
+                            logger.info(f"Added complete user transcript: {transcript}")
+                
                 # Handle speech detection events
                 elif event.get('type') == 'input_audio_buffer.speech_started':
                     logger.info("User started speaking")
@@ -260,7 +311,58 @@ class RealtimeService:
                 elif event.get('type') == 'input_audio_buffer.speech_stopped':
                     logger.info("User stopped speaking")
                     
-                # Add more event handlers as needed
-        
+                # Handle buffer commit event - important for transcript tracking
+                elif event.get('type') == 'input_audio_buffer.committed':
+                    logger.info("Input buffer committed, transcript should follow")
+                    if 'item_id' in event:
+                        item_id = event['item_id']
+                        logger.info(f"Item ID: {item_id}")
+
+                        # Instead of immediately adding a placeholder, set a flag to add it later
+                        # if we don't receive a transcript within a reasonable time
+                        
+                        # Start a task to add a placeholder after a delay if no transcript arrives
+                        async def add_placeholder_after_delay(item_id):
+                            await asyncio.sleep(2.0)  # Wait 2 seconds for transcript to arrive
+                            
+                            # If we still don't have a transcript for this item_id, add a placeholder
+                            if item_id not in transcripts_by_item or not transcripts_by_item[item_id]:
+                                logger.warning(f"No transcript received for item {item_id} after 2 seconds, adding placeholder")
+                                
+                                # Add a placeholder with context about the missing transcript
+                                # First check if we already have a user message for this item
+                                user_msg_exists = False
+                                for entry in self.conversation_history:
+                                    if entry.get("role") == "user" and entry.get("item_id") == item_id:
+                                        user_msg_exists = True
+                                        break
+                                
+                                if not user_msg_exists:
+                                    # Try to capture what the user might have been responding to
+                                    last_assistant_msg = ""
+                                    for entry in reversed(self.conversation_history):
+                                        if entry.get("role") == "assistant":
+                                            last_assistant_msg = entry.get("content", "")
+                                            break
+                                    
+                                    context = f"[Responding to: '{last_assistant_msg[:30]}...']" if last_assistant_msg else ""
+                                    placeholder = f"[User response not transcribed {context}]"
+                                    
+                                    # Add to conversation history
+                                    self.conversation_history.append({
+                                        "role": "user", 
+                                        "content": placeholder,
+                                        "item_id": item_id
+                                    })
+                                    logger.info(f"Added placeholder for missing transcript: {placeholder}")
+                                    
+                                    # Update tracking
+                                    transcripts_by_item[item_id] = placeholder
+                        
+                        # Start the delayed task without awaiting it
+                        asyncio.create_task(add_placeholder_after_delay(item_id))
+
         except Exception as e:
             logger.error(f"Error in realtime event handler: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
