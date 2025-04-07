@@ -1,4 +1,14 @@
+# Python virtual environment
+venv/
 .env
-gcs-credentials.jsongcs-credentials.json
 *.json
-!keepfile.json
+
+# Compiled Python files
+__pycache__/
+*.pyc
+
+# Mac system files
+.DS_Store
+
+# VSCode settings (optional)
+.vscode/
