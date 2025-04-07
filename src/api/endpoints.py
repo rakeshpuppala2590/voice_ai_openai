@@ -143,7 +143,7 @@ async def handle_gather(
                 
                 # Start recording via the API directly - this is more reliable than TwiML
                 recording = client.calls(CallSid).recordings.create(
-                    recording_status_callback='https://conv-ai-1018103016475.us-central1.run.app/api/v1/twilio/recording-status',
+                    recording_status_callback='https://5518-2603-8000-5803-1e47-e968-8330-d55a-ffd8.ngrok-free.app/api/v1/twilio/recording-status',
                     recording_status_callback_method='POST',
                 )
                 
@@ -344,7 +344,7 @@ async def start_recording(
         
         # Start recording via the API
         recording = client.calls(CallSid).recordings.create(
-            recording_status_callback='https://conv-ai-1018103016475.us-central1.run.app/api/v1/twilio/recording-status',
+            recording_status_callback='https://5518-2603-8000-5803-1e47-e968-8330-d55a-ffd8.ngrok-free.app/api/v1/twilio/recording-status',
             recording_status_callback_method='POST',
         )
         
@@ -382,3 +382,53 @@ async def test_openai():
             "error": str(e),
             "trace": traceback.format_exc()
         }
+    
+# Add to existing imports at the top of the file
+import os
+import logging
+from fastapi import Request, Response, Form, HTTPException
+from src.services.realtime_service import RealtimeService
+from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
+
+logger = logging.getLogger(__name__)
+
+async def handle_realtime_call(request: Request):
+    """Handle incoming Twilio calls using Realtime API"""
+    try:
+        # Get the ngrok URL from environment variables
+        ngrok_url = os.getenv('NGROK_URL')
+        if not ngrok_url:
+            logger.warning("NGROK_URL not set in environment variables")
+            # Extract domain from request if NGROK_URL not available
+            host = request.headers.get('host', 'example.com')
+            ngrok_url = host
+        
+        # Remove protocol if present and any trailing slashes
+        if ngrok_url.startswith('http://'):
+            ngrok_url = ngrok_url[7:]
+        elif ngrok_url.startswith('https://'):
+            ngrok_url = ngrok_url[8:]
+            
+        if ngrok_url.endswith('/'):
+            ngrok_url = ngrok_url[:-1]
+        
+        logger.info(f"Using base URL for Twilio: {ngrok_url}")
+        
+        # Initialize the realtime service
+        realtime_service = RealtimeService()
+        
+        # Generate TwiML with WebSocket stream
+        twiml_response = realtime_service.generate_twilio_response(ngrok_url)
+        logger.info(f"Generated TwiML response: {twiml_response}")
+        
+        # Return TwiML response
+        return Response(content=twiml_response, media_type="application/xml")
+    
+    except Exception as e:
+        logger.error(f"Error in realtime call handler: {str(e)}")
+        
+        # Return error TwiML
+        response = VoiceResponse()
+        response.say("We're sorry, but there was an error connecting to our voice assistant.", voice="alice")
+        
+        return Response(content=str(response), media_type="application/xml")
