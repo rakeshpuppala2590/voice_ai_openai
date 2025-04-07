@@ -5,6 +5,8 @@ from fastapi import WebSocket, WebSocketDisconnect
 from typing import Dict, List, Optional
 from src.services.realtime_service import RealtimeService
 from src.services.storage_service import StorageService
+from src.services.realtime_storage_service import RealtimeStorageService
+
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,9 @@ class WebSocketManager:
         self.active_connections: Dict[str, WebSocket] = {}
         self.realtime_services: Dict[str, RealtimeService] = {}
         self.storage_service = StorageService()
+        self.realtime_storage_service = RealtimeStorageService()
+        # Keep track of audio chunks per call
+        self.audio_chunks: Dict[str, List[str]] = {}
     
     async def connect(self, websocket: WebSocket, stream_sid: Optional[str] = None):
         """Connect a new WebSocket client"""
@@ -55,10 +60,7 @@ class WebSocketManager:
                         if call_sid:
                             realtime_service = RealtimeService()
                             self.realtime_services[call_sid] = realtime_service
-
-                        # DO NOT initialize the session here, do it in handle_stream
-
-                                                    
+                        
                         logger.info(f"New stream started: {stream_sid} for call {call_sid}")
                         
                         # Return the stream_sid so the handler can use it
@@ -88,6 +90,9 @@ class WebSocketManager:
             logger.error(f"No realtime service for call {call_sid}")
             return
         
+        # Initialize audio chunks list for this call
+        self.audio_chunks[call_sid] = []
+        
         try:
             # Wait for OpenAI connection to be established
             initialization_success = await realtime_service.initialize_session(call_sid)
@@ -107,6 +112,9 @@ class WebSocketManager:
                             "payload": audio_data
                         }
                     }
+                    
+                    # Store the audio chunk for later persistence
+                    self.audio_chunks[call_sid].append(audio_data)
                     
                     # Use asyncio.create_task to handle the async send operation
                     asyncio.create_task(websocket.send_json(message))
@@ -145,24 +153,32 @@ class WebSocketManager:
             # Clean up
             if call_sid in self.realtime_services:
                 await self.realtime_services[call_sid].close_session()
+                
+                # Store the conversation data
+                try:
+                    if realtime_service.conversation_history:
+                        # Get audio chunks if any
+                        audio_chunks = self.audio_chunks.get(call_sid, [])
+                        
+                        # Store conversation data
+                        storage_result = await self.realtime_storage_service.store_realtime_conversation(
+                            call_sid,
+                            realtime_service.conversation_history,
+                            audio_chunks
+                        )
+                        
+                        logger.info(f"Stored conversation data for call {call_sid}: {storage_result}")
+                except Exception as e:
+                    logger.error(f"Error storing conversation: {str(e)}")
+                
                 del self.realtime_services[call_sid]
             
-            self.disconnect(stream_sid)
+            # Clean up audio chunks
+            if call_sid in self.audio_chunks:
+                del self.audio_chunks[call_sid]
             
-            # Store the conversation data
-            try:
-                if realtime_service and realtime_service.conversation_history:
-                    conversation_data = {
-                        "transcript": realtime_service.conversation_history,
-                        "collected_info": realtime_service.collected_info
-                    }
-                    
-                    # Store in database or cloud storage
-                    # (Depends on your StorageService implementation)
-                    # self.storage_service.store_conversation(call_sid, conversation_data)
-                    logger.info(f"Stored conversation data for call {call_sid}")
-            except Exception as e:
-                logger.error(f"Error storing conversation: {str(e)}")
+            self.disconnect(stream_sid)
+
 
 # Create a singleton instance
 websocket_manager = WebSocketManager()

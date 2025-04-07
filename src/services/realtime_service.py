@@ -20,12 +20,12 @@ class RealtimeService:
         self.ws_connection = None
         self.conversation_history = []
         self.current_call_sid = None
-        self.voice = "nova"  # Default voice
+        self.voice = "alloy"  # Default voice
         self.model = "gpt-4o-realtime-preview"
         
         # System message that defines the assistant's behavior
         self.system_message = (
-            "You are a friendly call center agent. Start by greeting the caller and asking for their name. "
+            "Forget about the previous conversations You are a friendly call center agent (speak in a natural way). Start by greeting the caller and asking for their name. "
             "Follow these steps in order:\n"
             "1. Start with: 'Hello! I'm here to assist you today. Could you please tell me your name?'\n"
             "2. After getting name: 'Thank you, [name]. Could you please provide your phone number?'\n"
@@ -34,11 +34,12 @@ class RealtimeService:
             "Rules:\n"
             "- ALWAYS start with the greeting and name question\n"
             "- Ask only ONE question at a time\n"
+            "- Wait for the user to respond before asking the question properly\n"
             "- Keep responses brief and clear\n"
             "- Use friendly, conversational language\n"
             "- Wait for confirmation before moving to next question"
         )
-        
+
         self.collected_info = {
             "name": None,
             "phone": None,
@@ -226,7 +227,7 @@ class RealtimeService:
                         on_audio_callback(audio_data)
                 
                 # Store transcript for later reference
-                elif event.get('type') == 'response.text.delta':
+                elif event.get('type') == 'response.audio_transcript.delta':
                     if 'delta' in event:
                         # Add to conversation history
                         if not self.conversation_history or self.conversation_history[-1]["role"] != "assistant":
@@ -234,6 +235,24 @@ class RealtimeService:
                         else:
                             self.conversation_history[-1]["content"] += event['delta']
                 
+                # Handle user's speech transcript
+                elif event.get('type') == 'conversation.item.input_audio_transcription.delta':
+                    if 'delta' in event:
+                        # Add user speech to conversation history
+                        if not self.conversation_history or self.conversation_history[-1]["role"] != "user":
+                            self.conversation_history.append({"role": "user", "content": event['delta']})
+                        else:
+                            self.conversation_history[-1]["content"] += event['delta']
+                
+                # Handle completed transcription
+                elif event.get('type') == 'conversation.item.input_audio_transcription.completed':
+                    if 'transcript' in event:
+                        # Ensure we have a complete transcript in the history
+                        transcript = event['transcript']
+                        if not any(entry["role"] == "user" and entry["content"] == transcript for entry in self.conversation_history):
+                            self.conversation_history.append({"role": "user", "content": transcript})
+        
+
                 # Handle speech detection events
                 elif event.get('type') == 'input_audio_buffer.speech_started':
                     logger.info("User started speaking")

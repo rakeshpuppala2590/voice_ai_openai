@@ -19,38 +19,43 @@ class CloudStorage:
             # Get credentials path
 
 
-            # creds_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-            # if not creds_path:
-            #     raise ValueError("GOOGLE_APPLICATION_CREDENTIALS not set in environment variables")
+            creds_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+            if not creds_path:
+                creds_path = 'gcs-credentials.json'  # Default location
             
             # Convert relative path to absolute if needed
-            # if not os.path.isabs(creds_path):
-            #     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            #     creds_path = os.path.join(base_dir, 'gcs-credentials.json')  # Use the new credentials file
+            if not os.path.isabs(creds_path):
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                creds_path = os.path.join(base_dir, creds_path)
             
-            # if not os.path.exists(creds_path):
-            #     raise FileNotFoundError(f"Credentials file not found at: {creds_path}")
+            if not os.path.exists(creds_path):
+                raise FileNotFoundError(f"Credentials file not found at: {creds_path}")
 
-            # logger.info(f"Loading credentials from: {creds_path}")
+            logger.info(f"Loading credentials from: {creds_path}")
             
             # Initialize with explicit credentials
-            # credentials = service_account.Credentials.from_service_account_file(
-            #     creds_path,
-            #     scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            # )
+            credentials = service_account.Credentials.from_service_account_file(
+                creds_path,
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            
             
             # Get project ID and bucket name
             self.project_id = os.getenv('GCS_PROJECT_ID')
             self.bucket_name = os.getenv('GCS_BUCKET_NAME')
             
-            if not self.project_id:
-                raise ValueError("GCS_PROJECT_ID not set")
-            if not self.bucket_name:
-                raise ValueError("GCS_BUCKET_NAME not set")
             
+            if not self.project_id:
+                raise ValueError("GCS_PROJECT_ID not set in environment variables")
+            if not self.bucket_name:
+                raise ValueError("GCS_BUCKET_NAME not set in environment variables")
+            
+            logger.info(f"Using project_id: {self.project_id}, bucket_name: {self.bucket_name}")
+
+
             # Initialize storage client
             self.client = storage.Client(
-                # credentials=credentials,
+                credentials=credentials,
                 project=self.project_id
             )
             
@@ -59,21 +64,18 @@ class CloudStorage:
                 self.bucket = self.client.get_bucket(self.bucket_name)
                 logger.info(f"Connected to bucket: {self.bucket_name}")
                 
-                # Create required folders
-                self._ensure_folders_exist()
-                
             except Exception as e:
-                logger.warning(f"Creating new bucket: {self.bucket_name}")
+                logger.warning(f"Error accessing bucket ({str(e)}), trying to create it...")
                 self.bucket = self.client.create_bucket(
                     self.bucket_name,
                     location="us-central1"
                 )
-                # Create required folders in new bucket
-                self._ensure_folders_exist()
+            # Create required folders in new bucket
+            self._ensure_folders_exist()
                 
         except Exception as e:
             logger.error(f"Storage initialization failed: {str(e)}")
-            raise
+            raise RuntimeError(f"Failed to initialize GCS storage: {str(e)}")
 
     def _ensure_folders_exist(self):
         """Create the required folder structure in the bucket"""
@@ -92,19 +94,43 @@ class CloudStorage:
     def store_file(self, file_path: str, content: Union[str, bytes], content_type: str = 'text/plain') -> str:
         """Store a file in GCS"""
         try:
+            logger.info(f"Storing file at path: {file_path}")
+            
             # Ensure parent folders exist
             folder_path = os.path.dirname(file_path)
             if folder_path:
+                logger.info(f"Ensuring folder exists: {folder_path}")
                 placeholder = self.bucket.blob(f"{folder_path}/.placeholder")
                 if not placeholder.exists():
                     placeholder.upload_from_string('')
+                    logger.info(f"Created placeholder for folder: {folder_path}")
             
             # Upload actual file
             blob = self.bucket.blob(file_path)
-            blob.upload_from_string(content, content_type=content_type)
-            return f"gs://{self.bucket_name}/{file_path}"
+            
+            # Convert content to bytes if it's a string
+            if isinstance(content, str):
+                content_bytes = content.encode('utf-8')
+            else:
+                content_bytes = content
+                
+            # Check if content is empty
+            if not content_bytes:
+                logger.warning(f"Content is empty for file: {file_path}")
+                
+            # Upload content
+            logger.info(f"Uploading {len(content_bytes)} bytes to {file_path}")
+            blob.upload_from_string(content_bytes, content_type=content_type)
+            
+            # Get public URL
+            gcs_url = f"gs://{self.bucket_name}/{file_path}"
+            logger.info(f"Successfully stored file at: {gcs_url}")
+            return gcs_url
         except Exception as e:
             logger.error(f"Failed to store file {file_path}: {str(e)}")
+            # Print stack trace for debugging
+            import traceback
+            logger.error(traceback.format_exc())
             raise
 
     def store_transcript(self, call_sid: str, transcript: str) -> str:
