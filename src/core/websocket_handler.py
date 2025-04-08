@@ -22,6 +22,8 @@ class WebSocketManager:
         # Keep track of audio chunks per call
         self.audio_chunks: Dict[str, List[str]] = {}
     
+    # Update the connect method to properly initialize RealtimeService
+
     async def connect(self, websocket: WebSocket, stream_sid: Optional[str] = None):
         """Connect a new WebSocket client"""
         try:
@@ -57,11 +59,6 @@ class WebSocketManager:
                         # Store the connection
                         self.active_connections[stream_sid] = websocket
                         
-                        # Initialize a new realtime service for this call
-                        if call_sid:
-                            realtime_service = RealtimeService()
-                            self.realtime_services[call_sid] = realtime_service
-                        
                         logger.info(f"New stream started: {stream_sid} for call {call_sid}")
                         
                         # Return the stream_sid so the handler can use it
@@ -82,37 +79,50 @@ class WebSocketManager:
             del self.active_connections[stream_sid]
             logger.info(f"Removed WebSocket connection for stream: {stream_sid}")
     
-    def create_realtime_service(self, business_type="restaurant"):
-        """Create a new realtime service with specified business type"""
-        return RealtimeService(business_type=business_type)
+    # Add this method to the WebSocketManager class
+
+    def create_realtime_service(self, business_type):
+        """Create a RealtimeService with the specified business type"""
+        try:
+            from src.services.realtime_service import RealtimeService
+            return RealtimeService(business_type=business_type)
+        except Exception as e:
+            logger.error(f"Error creating RealtimeService: {str(e)}")
+            # Default to restaurant if there's an error
+            from src.services.realtime_service import RealtimeService
+            return RealtimeService(business_type="restaurant")
+
+    # Fix the handle_stream method to correctly use the business type parameter
 
     async def handle_stream(self, websocket: WebSocket, stream_sid: str, call_sid: str, business_type="restaurant"):
         """Handle the media stream for a connected client"""
-        if call_sid not in self.realtime_services:
-            self.realtime_services[call_sid] = self.create_realtime_service(business_type)
+        # Log the business type explicitly
+        logger.info(f"Creating RealtimeService with business type: {business_type}")
         
-        realtime_service = self.realtime_services.get(call_sid)
+        # Create a new RealtimeService with explicit business type
+        realtime_service = RealtimeService(business_type=business_type)
+        self.realtime_services[call_sid] = realtime_service
         
-        if not realtime_service:
-            logger.error(f"No realtime service for call {call_sid}")
-            return
+        logger.info(f"Created new RealtimeService for call {call_sid} with business type: {business_type}")
         
-        # Initialize audio chunks list for this call
-        if call_sid not in self.audio_chunks:
-            self.audio_chunks[call_sid] = {
-                "user": [],
-                "assistant": []
-        }
         # Track websocket state to avoid errors after closure
         websocket_closed = False
         
         try:
-            # Wait for OpenAI connection to be established
+            # Initialize audio chunks list for this call
+            if call_sid not in self.audio_chunks:
+                self.audio_chunks[call_sid] = {
+                    "user": [],
+                    "assistant": []
+                }
+            
+            # Initialize the OpenAI session with correct business type
             initialization_success = await realtime_service.initialize_session(call_sid)
             if not initialization_success:
                 logger.error(f"Failed to initialize OpenAI session for call {call_sid}")
                 return
-                
+            
+            # Rest of the method...
             # Define a callback to send audio back to Twilio
             def send_audio_to_twilio(audio_data: str):
                 """Send audio data back to Twilio via the WebSocket"""
@@ -209,6 +219,111 @@ class WebSocketManager:
             if call_sid in self.audio_chunks:
                 del self.audio_chunks[call_sid]
             
+            self.disconnect(stream_sid)
+
+    # Add this new method to handle the stream with an existing service
+
+    async def handle_stream_with_service(self, websocket: WebSocket, stream_sid: str, call_sid: str, realtime_service):
+        """Handle a stream with an already initialized RealtimeService"""
+        # Track websocket state to avoid errors after closure
+        websocket_closed = False
+        
+        try:
+            # Define a callback to send audio back to Twilio
+            def send_audio_to_twilio(audio_data: str):
+                """Send audio data back to Twilio via the WebSocket"""
+                if not websocket_closed:  # Check flag before sending
+                    try:
+                        # Wrap in a media message
+                        message = {
+                            "event": "media",
+                            "streamSid": stream_sid,
+                            "media": {
+                                "payload": audio_data
+                            }
+                        }
+                        # Send to Twilio - we can't use await here
+                        asyncio.create_task(websocket.send_text(json.dumps(message)))
+                    except Exception as e:
+                        logger.error(f"Error sending audio to Twilio: {e}")
+                        
+            # Start a task to handle events from OpenAI
+            openai_task = asyncio.create_task(
+                realtime_service.handle_realtime_events(send_audio_to_twilio)
+            )
+                    
+            # Process incoming messages from Twilio
+            try:
+                # Main processing loop
+                while True:
+                    if websocket_closed:
+                        logger.debug("Websocket marked as closed, breaking loop")
+                        break
+                        
+                    # Receive message from Twilio
+                    message = await websocket.receive_text()
+                    data = json.loads(message)
+                    
+                    # Handle media events (audio from Twilio)
+                    if data.get('event') == 'media':
+                        if 'media' in data and 'payload' in data['media']:
+                            # Store the raw audio chunk for later
+                            payload = data['media']['payload']
+                            if call_sid in self.audio_chunks:
+                                self.audio_chunks[call_sid]["user"].append(payload)
+                            
+                            # Process the audio through the realtime service
+                            await realtime_service.process_audio_chunk(payload)
+                    
+                    # Handle stop events
+                    elif data.get('event') == 'stop':
+                        logger.info(f"Received stop event for stream {stream_sid}")
+                        websocket_closed = True
+                        break
+                        
+            except websockets.exceptions.ConnectionClosed:
+                logger.info(f"Twilio WebSocket connection closed for stream {stream_sid}")
+                websocket_closed = True
+                
+            except Exception as e:
+                logger.error(f"Error processing WebSocket message: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+                websocket_closed = True
+                
+        finally:
+            # Final cleanup
+            websocket_closed = True
+            
+            # Clean up the OpenAI connection
+            if call_sid in self.realtime_services:
+                service = self.realtime_services[call_sid]
+                try:
+                    await service.close_session()
+                    logger.info(f"Closed OpenAI session for call {call_sid}")
+                except Exception as e:
+                    logger.error(f"Error closing OpenAI session: {str(e)}")
+                
+                # Try to save the conversation
+                try:
+                    await self.realtime_storage_service.store_realtime_conversation(
+                        call_sid,
+                        service.conversation_history,
+                        self.audio_chunks.get(call_sid),
+                        service.business_type
+                    )
+                    logger.info(f"Stored conversation for call {call_sid}")
+                except Exception as e:
+                    logger.error(f"Failed to store conversation: {str(e)}")
+                    
+                # Clean up resources
+                del self.realtime_services[call_sid]
+            
+            # Clean up audio chunks
+            if call_sid in self.audio_chunks:
+                del self.audio_chunks[call_sid]
+            
+            # Disconnect from WebSocket manager
             self.disconnect(stream_sid)
 
 

@@ -16,20 +16,30 @@ logger = logging.getLogger(__name__)
 class RealtimeService:
     """Service for interacting with OpenAI Realtime API via WebSockets"""
     
-    def __init__(self, business_type="restaurant"):
+    # Improve the RealtimeService constructor
+
+    def __init__(self, business_type: str = "restaurant"):
         self.api_key = os.getenv("OPENAI_API_KEY")
         if not self.api_key:
             raise ValueError("OPENAI_API_KEY not set in environment variables")
-        
-         # Initialize the OpenAI SDK client
+            
+        # Initialize the OpenAI SDK client
         self.client = OpenAI(api_key=self.api_key)
-
 
         self.ws_connection = None
         self.conversation_history = []
         self.current_call_sid = None
         self.voice = "alloy"  # Default voice
         self.model = "gpt-4o-realtime-preview"
+        
+        # Normalize and validate business_type
+        business_type = business_type.lower() if business_type else "restaurant"
+        if business_type not in ["restaurant", "salon"]:
+            logger.warning(f"Invalid business type: {business_type}, defaulting to restaurant")
+            business_type = "restaurant"
+        
+        # Log the business type being used for this instance
+        logger.info(f"Creating RealtimeService with business type: {business_type}")
         self.business_type = business_type
 
         # Load system message based on business type
@@ -42,6 +52,7 @@ class RealtimeService:
     def _get_system_message(self, business_type):
         """Get appropriate system message based on business type"""
         if business_type == "restaurant":
+            logger.info("Using RESTAURANT system message")
             return """
             <context>
             You are a friendly restaurant reservation assistant for "Gourmet Delights". 
@@ -74,6 +85,8 @@ class RealtimeService:
             </context>
             """
         elif business_type == "salon":
+            logger.info("Using SALON system message")
+
             return """
             <context>
             You are a friendly hair salon appointment scheduler for "Elegant Styles". 
@@ -85,7 +98,7 @@ class RealtimeService:
             - Address: 456 Style Avenue, Anytown, CA
             - Phone: (555) 789-0123
             - Website: elegantstyles.com
-            
+             
             SERVICES:
             {{menu_items}}
             
@@ -301,6 +314,8 @@ class RealtimeService:
     async def initialize_session(self, call_sid: str) -> bool:
         """Initialize a realtime session with OpenAI"""
         self.current_call_sid = call_sid
+        logger.info(f"Connecting to OpenAI Realtime API for call {call_sid} with business type: {self.business_type}")
+
         
         # Connect to OpenAI Realtime API
         try:

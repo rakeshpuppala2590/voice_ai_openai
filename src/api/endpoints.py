@@ -45,6 +45,23 @@ class VoiceInput(BaseModel):
 class VoiceAPIResponse(BaseModel):
     response_text: str
 
+# Add this at the top of the file
+
+# Simple tracking mechanism for salon vs restaurant calls
+class CallTracker:
+    def __init__(self):
+        self.calls = set()
+        
+    def add_call(self, call_sid):
+        self.calls.add(call_sid)
+        
+    def is_salon_call(self, call_sid):
+        return call_sid in self.calls
+
+# Create singleton instances
+salon_calls = CallTracker()
+restaurant_calls = CallTracker()
+
 @router.post("/voice/input", response_model=VoiceAPIResponse)
 async def handle_voice_input(voice_input: VoiceInput):
     """Handle JSON voice input from direct API calls"""
@@ -432,31 +449,60 @@ async def handle_realtime_call(request: Request):
         response.say("We're sorry, but there was an error connecting to our voice assistant.", voice="alice")
         
         return Response(content=str(response), media_type="application/xml")
-    
+
+# Update the salon endpoint to ensure the query parameter is correctly included
+
 @router.post("/twilio/salon")
 async def handle_salon_call(request: Request):
-    """Handle incoming Twilio calls for hair salon using Realtime API"""
+    """Handle incoming Twilio calls for salon using Realtime API"""
     try:
+
+         # Extract call SID if available
+        form_data = await request.form()
+        call_sid = form_data.get("CallSid")
+        
+        if call_sid:
+            # Track this as a salon call
+            salon_calls.add_call(call_sid)
+            logger.info(f"Tracking call {call_sid} as a salon call")
+
         # Get the ngrok URL from environment variables
         ngrok_url = os.getenv('NGROK_URL')
         if not ngrok_url:
-            raise ValueError("NGROK_URL not set in environment variables")
+            logger.warning("NGROK_URL not set in environment variables")
+            # Extract domain from request if NGROK_URL not available
+            host = request.headers.get('host', 'example.com')
+            ngrok_url = host
+            
+        logger.info(f"Using base URL for Twilio salon call: {ngrok_url}")
         
-
-        # Explicitly initialize with salon type
-        realtime_service = RealtimeService(business_type="salon")
+        # Clean the URL properly
+        if ngrok_url.startswith('http://'):
+            ngrok_url = ngrok_url[7:]
+        elif ngrok_url.startswith('https://'):
+            ngrok_url = ngrok_url[8:]
         
-        # Generate TwiML with WebSocket stream and specify salon business type
-        stream_url = realtime_service.get_twilio_stream_url(ngrok_url)
+        # Remove trailing slash if present
+        if ngrok_url.endswith('/'):
+            ngrok_url = ngrok_url[:-1]
         
-        # Create a custom response that includes the business type in the WebSocket URL
+        # Form the WebSocket URL correctly
+        stream_url = f"wss://{ngrok_url}/realtime-stream"
+        
+        # Add the type=salon parameter
+        stream_url_with_param = f"{stream_url}?type=salon"
+        
+        # Log the full URL for debugging
+        logger.info(f"Using WebSocket URL with parameter: {stream_url_with_param}")
+        
+        # Create TwiML response
         response = VoiceResponse()
         response.say("Please wait while we connect you to Elegant Styles salon booking assistant.", voice="alice")
         response.pause(length=1)
         
-        # Connect with stream, passing the business type as a parameter
+        # Add the stream with explicit type parameter
         connect = Connect()
-        connect.stream(url=f"{stream_url}?type=salon")
+        connect.stream(url=stream_url_with_param)
         response.append(connect)
         
         response.say("You're now connected. Please start speaking.", voice="alice")
@@ -467,6 +513,14 @@ async def handle_salon_call(request: Request):
         # Return TwiML response
         return Response(content=twiml_response, media_type="application/xml")
     
+    except Exception as e:
+        logger.error(f"Error in salon call handler: {str(e)}")
+        
+        # Return error TwiML
+        response = VoiceResponse()
+        response.say("We're sorry, but there was an error connecting to our salon booking system.", voice="alice")
+        
+        return Response(content=str(response), media_type="application/xml")
 
         
         # # Format the URL if needed (same as in handle_realtime_call)
@@ -490,16 +544,10 @@ async def handle_salon_call(request: Request):
         # # Return TwiML response
         # return Response(content=twiml_response, media_type="application/xml")
     
-    except Exception as e:
-        logger.error(f"Error in salon call handler: {str(e)}")
-        
-        # Return error TwiML
-        response = VoiceResponse()
-        response.say("We're sorry, but there was an error connecting to our salon booking system.", voice="alice")
-        
-        return Response(content=str(response), media_type="application/xml")
 
 # Update the restaurant endpoint
+
+# Update the restaurant endpoint with the same URL formatting
 
 @router.post("/twilio/restaurant")
 async def handle_restaurant_call(request: Request):
@@ -513,29 +561,30 @@ async def handle_restaurant_call(request: Request):
             host = request.headers.get('host', 'example.com')
             ngrok_url = host
         
-        # Format the URL if needed
-        # if ngrok_url.startswith('http://'):
-        #     ngrok_url = ngrok_url[7:]
-        # elif ngrok_url.startswith('https://'):
-        #     ngrok_url = ngrok_url[8:]
+        # Clean the URL properly
+        if ngrok_url.startswith('http://'):
+            ngrok_url = ngrok_url[7:]
+        elif ngrok_url.startswith('https://'):
+            ngrok_url = ngrok_url[8:]
         
-        # if ngrok_url.endswith('/'):
-        #     ngrok_url = ngrok_url[:-1]
+        # Remove trailing slash if present
+        if ngrok_url.endswith('/'):
+            ngrok_url = ngrok_url[:-1]
         
         logger.info(f"Using base URL for Twilio restaurant call: {ngrok_url}")
+        
+        # Form the WebSocket URL correctly
+        stream_url = f"wss://{ngrok_url}/realtime-stream"
         
         # Explicitly initialize with restaurant type
         realtime_service = RealtimeService(business_type="restaurant")
         
-        # Generate TwiML with WebSocket stream and add business type parameter
-        stream_url = realtime_service.get_twilio_stream_url(ngrok_url)
-        
-        # Create a custom response that includes the business type in the WebSocket URL
+        # Create the response
         response = VoiceResponse()
         response.say("Please wait while we connect you to Gourmet Delights restaurant booking assistant.", voice="alice")
         response.pause(length=1)
         
-        # Connect with stream
+        # Add the stream with explicit type
         connect = Connect()
         connect.stream(url=f"{stream_url}?type=restaurant")
         response.append(connect)
@@ -553,9 +602,10 @@ async def handle_restaurant_call(request: Request):
         
         # Return error TwiML
         response = VoiceResponse()
-        response.say("We're sorry, but there was an error connecting to our restaurant reservation system.", voice="alice")
+        response.say("We're sorry, but there was an error connecting to our restaurant booking system.", voice="alice")
         
         return Response(content=str(response), media_type="application/xml")
+
 
 @router.post("/twilio/voice-menu")
 async def handle_voice_menu(request: Request):
@@ -606,6 +656,8 @@ async def handle_voice_menu(request: Request):
 
 # Update the select_business endpoint
 
+# Update the select_business function
+
 @router.post("/twilio/select-business")
 async def select_business(
     request: Request,
@@ -628,13 +680,10 @@ async def select_business(
         if "restaurant" in user_input or Digits == "1":
             logger.info(f"User selected: Restaurant for call {CallSid}")
             
-            # Add a clean transition message before redirecting
             response.say("Thank you for choosing our restaurant service. Connecting you now.", voice="alice")
+            response.pause(length=1)
             
-            # Add a pause to ensure a clean transition
-            response.pause(length=2)
-            
-            # Send business type as a query parameter 
+            # Make the business type explicit in the URL
             response.redirect('/api/v1/twilio/restaurant?type=restaurant', method='POST')
             return Response(content=str(response), media_type="application/xml")
         
@@ -642,13 +691,10 @@ async def select_business(
         elif "salon" in user_input or "hair" in user_input or Digits == "2":
             logger.info(f"User selected: Salon for call {CallSid}")
             
-            # Add a clean transition message before redirecting
             response.say("Thank you for choosing our salon service. Connecting you now.", voice="alice")
+            response.pause(length=1)
             
-            # Add a pause to ensure a clean transition
-            response.pause(length=2)
-            
-            # Send business type as a query parameter
+            # Make the business type explicit in the URL
             response.redirect('/api/v1/twilio/salon?type=salon', method='POST')
             return Response(content=str(response), media_type="application/xml")
         
