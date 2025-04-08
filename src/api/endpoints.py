@@ -143,7 +143,7 @@ async def handle_gather(
                 
                 # Start recording via the API directly - this is more reliable than TwiML
                 recording = client.calls(CallSid).recordings.create(
-                    recording_status_callback='https://5518-2603-8000-5803-1e47-e968-8330-d55a-ffd8.ngrok-free.app/api/v1/twilio/recording-status',
+                    recording_status_callback='https://83cf-2603-8000-5803-1e47-ce2-d7e7-96ec-137e.ngrok-free.app/api/v1/twilio/recording-status',
                     recording_status_callback_method='POST',
                 )
                 
@@ -344,7 +344,7 @@ async def start_recording(
         
         # Start recording via the API
         recording = client.calls(CallSid).recordings.create(
-            recording_status_callback='https://5518-2603-8000-5803-1e47-e968-8330-d55a-ffd8.ngrok-free.app/api/v1/twilio/recording-status',
+            recording_status_callback='https://83cf-2603-8000-5803-1e47-ce2-d7e7-96ec-137e.ngrok-free.app/api/v1/twilio/recording-status',
             recording_status_callback_method='POST',
         )
         
@@ -430,5 +430,217 @@ async def handle_realtime_call(request: Request):
         # Return error TwiML
         response = VoiceResponse()
         response.say("We're sorry, but there was an error connecting to our voice assistant.", voice="alice")
+        
+        return Response(content=str(response), media_type="application/xml")
+    
+@router.post("/twilio/salon")
+async def handle_salon_call(request: Request):
+    """Handle incoming Twilio calls for hair salon using Realtime API"""
+    try:
+        # Get the ngrok URL from environment variables
+        ngrok_url = os.getenv('NGROK_URL')
+        if not ngrok_url:
+            raise ValueError("NGROK_URL not set in environment variables")
+        
+        # Format the URL if needed (same as in handle_realtime_call)
+        if ngrok_url.startswith('http://'):
+            ngrok_url = ngrok_url[7:]
+        elif ngrok_url.startswith('https://'):
+            ngrok_url = ngrok_url[8:]
+        
+        if ngrok_url.endswith('/'):
+            ngrok_url = ngrok_url[:-1]
+        
+        logger.info(f"Using base URL for Twilio salon call: {ngrok_url}")
+        
+        # Initialize the realtime service with salon type
+        realtime_service = RealtimeService(business_type="salon")
+        
+        # Generate TwiML with WebSocket stream
+        twiml_response = realtime_service.generate_twilio_response(ngrok_url)
+        logger.info(f"Generated TwiML response for salon: {twiml_response}")
+        
+        # Return TwiML response
+        return Response(content=twiml_response, media_type="application/xml")
+    
+    except Exception as e:
+        logger.error(f"Error in salon call handler: {str(e)}")
+        
+        # Return error TwiML
+        response = VoiceResponse()
+        response.say("We're sorry, but there was an error connecting to our salon booking system.", voice="alice")
+        
+        return Response(content=str(response), media_type="application/xml")
+
+# Update the restaurant endpoint
+
+@router.post("/twilio/restaurant")
+async def handle_restaurant_call(request: Request):
+    """Handle incoming Twilio calls for restaurant using Realtime API"""
+    try:
+        # Get the ngrok URL from environment variables
+        ngrok_url = os.getenv('NGROK_URL')
+        if not ngrok_url:
+            logger.warning("NGROK_URL not set in environment variables")
+            # Extract domain from request if NGROK_URL not available
+            host = request.headers.get('host', 'example.com')
+            ngrok_url = host
+        
+        # Format the URL if needed
+        # if ngrok_url.startswith('http://'):
+        #     ngrok_url = ngrok_url[7:]
+        # elif ngrok_url.startswith('https://'):
+        #     ngrok_url = ngrok_url[8:]
+        
+        # if ngrok_url.endswith('/'):
+        #     ngrok_url = ngrok_url[:-1]
+        
+        logger.info(f"Using base URL for Twilio restaurant call: {ngrok_url}")
+        
+        # Explicitly initialize with restaurant type
+        realtime_service = RealtimeService(business_type="restaurant")
+        
+        # Generate TwiML with WebSocket stream and add business type parameter
+        stream_url = realtime_service.get_twilio_stream_url(ngrok_url)
+        
+        # Create a custom response that includes the business type in the WebSocket URL
+        response = VoiceResponse()
+        response.say("Please wait while we connect you to Gourmet Delights restaurant booking assistant.", voice="alice")
+        response.pause(length=1)
+        
+        # Connect with stream
+        connect = Connect()
+        connect.stream(url=f"{stream_url}?type=restaurant")
+        response.append(connect)
+        
+        response.say("You're now connected. Please start speaking.", voice="alice")
+        
+        twiml_response = str(response)
+        logger.info(f"Generated TwiML response for restaurant: {twiml_response}")
+        
+        # Return TwiML response
+        return Response(content=twiml_response, media_type="application/xml")
+    
+    except Exception as e:
+        logger.error(f"Error in restaurant call handler: {str(e)}")
+        
+        # Return error TwiML
+        response = VoiceResponse()
+        response.say("We're sorry, but there was an error connecting to our restaurant reservation system.", voice="alice")
+        
+        return Response(content=str(response), media_type="application/xml")
+
+@router.post("/twilio/voice-menu")
+async def handle_voice_menu(request: Request):
+    """Initial entry point that asks user for business selection"""
+    try:
+        response = VoiceResponse()
+        
+        # Welcome message and instructions
+        response.say(
+            "Thank you for calling. "
+            "Please say 'restaurant' for restaurant reservations "
+            "or 'salon' for salon appointments.", 
+            voice="alice"
+        )
+        
+        # Create gather for voice or keypad input
+        gather = Gather(
+            input='speech dtmf',
+            timeout=5,
+            action='/api/v1/twilio/select-business',
+            method='POST',
+            language='en-US'
+        )
+        
+        # Add the instruction again within the gather
+        gather.say(
+            "Say 'restaurant' or press 1 for restaurant reservations. "
+            "Say 'salon' or press 2 for salon appointments.",
+            voice="alice"
+        )
+        response.append(gather)
+        
+        # If no input, repeat the menu
+        response.redirect('/api/v1/twilio/voice-menu', method='POST')
+        
+        logger.info("Generated voice menu TwiML")
+        return Response(content=str(response), media_type="application/xml")
+    
+    except Exception as e:
+        logger.error(f"Error in voice menu handler: {str(e)}")
+        
+        # Return error TwiML
+        response = VoiceResponse()
+        response.say("We're sorry, but there was an error processing your call.", voice="alice")
+        
+        return Response(content=str(response), media_type="application/xml")
+    
+
+# Update the select_business endpoint
+
+@router.post("/twilio/select-business")
+async def select_business(
+    request: Request,
+    SpeechResult: str = Form(None),
+    Digits: str = Form(None),
+    CallSid: str = Form(None)
+):
+    """Process business selection and redirect to appropriate service"""
+    try:
+        logger.info(f"Business selection for call {CallSid}: Speech='{SpeechResult}', Digits='{Digits}'")
+        
+        # Get user input from speech or keypad
+        user_input = SpeechResult or ""
+        user_input = user_input.lower()
+        
+        # Create a response with a clean transition
+        response = VoiceResponse()
+        
+        # Check for restaurant selection
+        if "restaurant" in user_input or Digits == "1":
+            logger.info(f"User selected: Restaurant for call {CallSid}")
+            
+            # Add a clean transition message before redirecting
+            response.say("Thank you for choosing our restaurant service. Connecting you now.", voice="alice")
+            
+            # Add a pause to ensure a clean transition
+            response.pause(length=2)
+            
+            # Send business type as a query parameter 
+            response.redirect('/api/v1/twilio/restaurant?type=restaurant', method='POST')
+            return Response(content=str(response), media_type="application/xml")
+        
+        # Check for salon selection
+        elif "salon" in user_input or "hair" in user_input or Digits == "2":
+            logger.info(f"User selected: Salon for call {CallSid}")
+            
+            # Add a clean transition message before redirecting
+            response.say("Thank you for choosing our salon service. Connecting you now.", voice="alice")
+            
+            # Add a pause to ensure a clean transition
+            response.pause(length=2)
+            
+            # Send business type as a query parameter
+            response.redirect('/api/v1/twilio/salon?type=salon', method='POST')
+            return Response(content=str(response), media_type="application/xml")
+        
+        # Handle invalid selection
+        else:
+            logger.warning(f"Invalid selection: {user_input or Digits}")
+            response.say(
+                "I'm sorry, I didn't understand your selection. "
+                "Let's try again.", 
+                voice="alice"
+            )
+            response.redirect('/api/v1/twilio/voice-menu', method='POST')
+            return Response(content=str(response), media_type="application/xml")
+    
+    except Exception as e:
+        logger.error(f"Error in business selection handler: {str(e)}")
+        
+        # Return error TwiML
+        response = VoiceResponse()
+        response.say("We're sorry, but there was an error processing your selection.", voice="alice")
         
         return Response(content=str(response), media_type="application/xml")

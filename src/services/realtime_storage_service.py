@@ -16,7 +16,7 @@ class RealtimeStorageService:
     def __init__(self):
         self.storage_service = StorageService()
     
-    async def store_realtime_conversation(self, call_sid: str, conversation_history: list, audio_chunks: list = None):
+    async def store_realtime_conversation(self, call_sid: str, conversation_history: list, audio_chunks: dict = None, business_type: str = "generic") -> dict:
         """
         Store realtime conversation data including transcript and audio
         
@@ -30,6 +30,8 @@ class RealtimeStorageService:
         """
         try:
             logger.info(f"Starting storage for call {call_sid} with {len(conversation_history)} messages and {len(audio_chunks) if audio_chunks else 0} audio chunks")
+
+
             
             if audio_chunks:
                 user_chunks = len(audio_chunks.get("user", []))
@@ -94,7 +96,8 @@ class RealtimeStorageService:
                 "timestamp": timestamp,
                 "transcript_url": transcript_url,
                 "audio_url": audio_urls,
-                "conversation_length": len(conversation_history) if conversation_history else 0
+                "conversation_length": len(conversation_history) if conversation_history else 0,
+                "business_type": business_type,
             }
             
             # Store metadata

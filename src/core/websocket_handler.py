@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 from src.services.realtime_service import RealtimeService
 from src.services.storage_service import StorageService
 from src.services.realtime_storage_service import RealtimeStorageService
+import websockets
 
 
 logger = logging.getLogger(__name__)
@@ -81,9 +82,15 @@ class WebSocketManager:
             del self.active_connections[stream_sid]
             logger.info(f"Removed WebSocket connection for stream: {stream_sid}")
     
-    
-    async def handle_stream(self, websocket: WebSocket, stream_sid: str, call_sid: str):
+    def create_realtime_service(self, business_type="restaurant"):
+        """Create a new realtime service with specified business type"""
+        return RealtimeService(business_type=business_type)
+
+    async def handle_stream(self, websocket: WebSocket, stream_sid: str, call_sid: str, business_type="restaurant"):
         """Handle the media stream for a connected client"""
+        if call_sid not in self.realtime_services:
+            self.realtime_services[call_sid] = self.create_realtime_service(business_type)
+        
         realtime_service = self.realtime_services.get(call_sid)
         
         if not realtime_service:
@@ -96,6 +103,8 @@ class WebSocketManager:
                 "user": [],
                 "assistant": []
         }
+        # Track websocket state to avoid errors after closure
+        websocket_closed = False
         
         try:
             # Wait for OpenAI connection to be established
@@ -107,7 +116,14 @@ class WebSocketManager:
             # Define a callback to send audio back to Twilio
             def send_audio_to_twilio(audio_data: str):
                 """Send audio data back to Twilio via the WebSocket"""
+                nonlocal websocket_closed  # Move this to the beginning of the function
+
                 try:
+                    # Skip sending if websocket is closed
+                    if websocket_closed:
+                        logger.debug("WebSocket closed, not sending audio")
+                        return
+
                     # Construct the media message
                     message = {
                         "event": "media",
@@ -122,6 +138,12 @@ class WebSocketManager:
                     
                     # Use asyncio.create_task to handle the async send operation
                     asyncio.create_task(websocket.send_json(message))
+
+                except websockets.exceptions.ConnectionClosed:
+                    # Connection already closed, mark as such
+                    websocket_closed = True
+                    logger.info(f"WebSocket already closed for stream {stream_sid}")
+
                 except Exception as e:
                     logger.error(f"Error sending audio to Twilio: {str(e)}")
             
@@ -145,34 +167,39 @@ class WebSocketManager:
                         await realtime_service.process_audio_chunk(audio_payload)
                     
                     elif data['event'] == 'stop':
-                        logger.info(f"Stream {stream_sid} stopped")
+                        logger.info(f"Received stop event for stream {stream_sid}")
+                        # Mark the websocket as closed
+                        websocket_closed = True
                         break
                     
                 except WebSocketDisconnect:
                     logger.info(f"WebSocket disconnected for stream {stream_sid}")
+                    websocket_closed = True
+                    break
+                except websockets.exceptions.ConnectionClosed:
+                    logger.info(f"WebSocket connection closed for stream {stream_sid}")
+                    websocket_closed = True
                     break
                 except Exception as e:
                     logger.error(f"Error processing WebSocket message: {str(e)}")
         
         finally:
             # Clean up
+            # Mark the websocket as closed to prevent further send attempts
+            websocket_closed = True
             if call_sid in self.realtime_services:
                 await self.realtime_services[call_sid].close_session()
                 
                 # Store the conversation data
                 try:
                     if realtime_service.conversation_history:
-                        # Get audio chunks if any
-                        audio_chunks = self.audio_chunks.get(call_sid, {"user": [], "assistant": []})
-                        
-                        # Store conversation data
-                        storage_result = await self.realtime_storage_service.store_realtime_conversation(
-                            call_sid,
+                        await self.realtime_storage_service.store_realtime_conversation(
+                            call_sid, 
                             realtime_service.conversation_history,
-                            audio_chunks
+                            self.audio_chunks.get(call_sid, {}),
+                            business_type
                         )
-                        
-                        logger.info(f"Stored conversation data for call {call_sid}: {storage_result}")
+                        logger.info(f"Stored conversation for call {call_sid}")
                 except Exception as e:
                     logger.error(f"Error storing conversation: {str(e)}")
                 

@@ -29,38 +29,74 @@ app.add_middleware(
 )
 
 # Include router with prefix
-app.include_router(router, prefix="/api/v1")
+app.include_router(router, prefix="/api/v1", include_in_schema=True)
+logger = logging.getLogger(__name__)
 
-# Add WebSocket route for Twilio Media Streams at root level
+
 @app.websocket("/realtime-stream")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for Twilio Media Streams"""
     stream_sid = None
     call_sid = None
+    business_type = "restaurant"  # Default
     
     try:
-        # Accept the connection
+        # Log more details about the WebSocket connection
+        print(f"WebSocket connection attempt: {websocket.url}")
+        print(f"Headers: {websocket.headers}")
+        
+        # Accept the connection without waiting for the start message
         await websocket.accept()
-        logging.info("WebSocket connection accepted")
+        print(f"WebSocket connection accepted")
         
         # Connect and get the stream_sid and call_sid
         stream_sid, call_sid = await websocket_manager.connect(websocket)
         
+        # Try to determine business type from headers or query parameters
+        try:
+            # Get the path from which this WebSocket was called
+            request_headers = websocket.headers
+            request_url = request_headers.get("origin", "")
+            referer = request_headers.get("referer", "")
+
+            # Check both origin and referer for business type indicators
+            if "salon" in request_url or "salon" in referer:
+                business_type = "salon"
+                logger.info(f"Determined business type from headers: salon")
+            elif "restaurant" in request_url or "restaurant" in referer:
+                business_type = "restaurant"
+                logger.info(f"Determined business type from headers: restaurant")
+            else:
+                # Try to get from query parameters
+                query_params = websocket.query_params
+                if "type" in query_params:
+                    param_type = query_params["type"]
+                    if param_type in ["salon", "restaurant"]:
+                        business_type = param_type
+                        logger.info(f"Determined business type from query param: {business_type}")
+                
+            logger.info(f"Determined business type: {business_type}")
+        except Exception as e:
+            logger.warning(f"Error determining business type: {str(e)}")
+            logger.warning("Using default business type: restaurant")
+
         if stream_sid and call_sid:
-            # Handle the media stream
-            await websocket_manager.handle_stream(websocket, stream_sid, call_sid)
+            # Handle the media stream with the correct business type
+            await websocket_manager.handle_stream(websocket, stream_sid, call_sid, business_type)
         else:
             # Failed to get stream_sid, close the connection
-            logging.error("Failed to get stream_sid and call_sid, closing connection")
+            print("Failed to get stream_sid and call_sid, closing connection")
             await websocket.close()
     
     except WebSocketDisconnect:
-        logging.info(f"WebSocket disconnected")
+        print(f"WebSocket disconnected")
         if stream_sid:
             websocket_manager.disconnect(stream_sid)
     
     except Exception as e:
-        logging.error(f"Error in WebSocket handler: {str(e)}")
+        import traceback
+        logger.error(f"Error in WebSocket handler: {str(e)}")
+        logger.error(traceback.format_exc())
         if stream_sid:
             websocket_manager.disconnect(stream_sid)
 
