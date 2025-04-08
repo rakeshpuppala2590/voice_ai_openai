@@ -442,26 +442,53 @@ async def handle_salon_call(request: Request):
         if not ngrok_url:
             raise ValueError("NGROK_URL not set in environment variables")
         
-        # Format the URL if needed (same as in handle_realtime_call)
-        if ngrok_url.startswith('http://'):
-            ngrok_url = ngrok_url[7:]
-        elif ngrok_url.startswith('https://'):
-            ngrok_url = ngrok_url[8:]
-        
-        if ngrok_url.endswith('/'):
-            ngrok_url = ngrok_url[:-1]
-        
-        logger.info(f"Using base URL for Twilio salon call: {ngrok_url}")
-        
-        # Initialize the realtime service with salon type
+
+        # Explicitly initialize with salon type
         realtime_service = RealtimeService(business_type="salon")
         
-        # Generate TwiML with WebSocket stream
-        twiml_response = realtime_service.generate_twilio_response(ngrok_url)
+        # Generate TwiML with WebSocket stream and specify salon business type
+        stream_url = realtime_service.get_twilio_stream_url(ngrok_url)
+        
+        # Create a custom response that includes the business type in the WebSocket URL
+        response = VoiceResponse()
+        response.say("Please wait while we connect you to Elegant Styles salon booking assistant.", voice="alice")
+        response.pause(length=1)
+        
+        # Connect with stream, passing the business type as a parameter
+        connect = Connect()
+        connect.stream(url=f"{stream_url}?type=salon")
+        response.append(connect)
+        
+        response.say("You're now connected. Please start speaking.", voice="alice")
+        
+        twiml_response = str(response)
         logger.info(f"Generated TwiML response for salon: {twiml_response}")
         
         # Return TwiML response
         return Response(content=twiml_response, media_type="application/xml")
+    
+
+        
+        # # Format the URL if needed (same as in handle_realtime_call)
+        # if ngrok_url.startswith('http://'):
+        #     ngrok_url = ngrok_url[7:]
+        # elif ngrok_url.startswith('https://'):
+        #     ngrok_url = ngrok_url[8:]
+        
+        # if ngrok_url.endswith('/'):
+        #     ngrok_url = ngrok_url[:-1]
+        
+        # logger.info(f"Using base URL for Twilio salon call: {ngrok_url}")
+        
+        # # Initialize the realtime service with salon type
+        # realtime_service = RealtimeService(business_type="salon")
+        
+        # # Generate TwiML with WebSocket stream
+        # twiml_response = realtime_service.generate_twilio_response(ngrok_url)
+        # logger.info(f"Generated TwiML response for salon: {twiml_response}")
+        
+        # # Return TwiML response
+        # return Response(content=twiml_response, media_type="application/xml")
     
     except Exception as e:
         logger.error(f"Error in salon call handler: {str(e)}")

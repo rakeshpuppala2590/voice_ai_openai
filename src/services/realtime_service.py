@@ -356,7 +356,7 @@ class RealtimeService:
                     "turn_detection": {
                         "type": "server_vad",
                         "create_response": True,
-                        "interrupt_response": False
+                        "interrupt_response": True
                     },
                     "input_audio_format": "g711_ulaw",
                     "output_audio_format": "g711_ulaw",
@@ -639,7 +639,7 @@ class RealtimeService:
                 if event.get('type') == 'response.done':
                     logger.info("Response complete")                    
                     # Allow a short delay for any final messages to be processed
-                    await asyncio.sleep(1.0)
+                    # await asyncio.sleep(1.0)
                 
                 # Handle audio from OpenAI to send back to Twilio
                 if event.get('type') == 'response.audio.delta' and 'delta' in event:
