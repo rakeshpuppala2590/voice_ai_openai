@@ -152,6 +152,8 @@ async def handle_gather(
                 from twilio.rest import Client
                 import os
                 
+                #set ngrok URL
+                ngrok_url = os.getenv('NGROK_URL')
                 # Initialize Twilio client
                 client = Client(
                     os.getenv('TWILIO_ACCOUNT_SID'),
@@ -160,7 +162,7 @@ async def handle_gather(
                 
                 # Start recording via the API directly - this is more reliable than TwiML
                 recording = client.calls(CallSid).recordings.create(
-                    recording_status_callback='https://83cf-2603-8000-5803-1e47-ce2-d7e7-96ec-137e.ngrok-free.app/api/v1/twilio/recording-status',
+                    recording_status_callback=f'{ngrok_url}/api/v1/twilio/recording-status',
                     recording_status_callback_method='POST',
                 )
                 
@@ -358,10 +360,12 @@ async def start_recording(
             os.getenv('TWILIO_ACCOUNT_SID'),
             os.getenv('TWILIO_AUTH_TOKEN')
         )
+
+        ngrok_url = os.getenv('NGROK_URL')
         
         # Start recording via the API
         recording = client.calls(CallSid).recordings.create(
-            recording_status_callback='https://83cf-2603-8000-5803-1e47-ce2-d7e7-96ec-137e.ngrok-free.app/api/v1/twilio/recording-status',
+            recording_status_callback=f'{ngrok_url}/api/v1/twilio/recording-status',
             recording_status_callback_method='POST',
         )
         
@@ -475,7 +479,7 @@ async def handle_salon_call(request: Request):
             ngrok_url = host
             
         logger.info(f"Using base URL for Twilio salon call: {ngrok_url}")
-        
+         
         # Clean the URL properly
         if ngrok_url.startswith('http://'):
             ngrok_url = ngrok_url[7:]

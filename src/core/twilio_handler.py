@@ -16,9 +16,12 @@ class TwilioHandler:
         """Add recording logic to the TwiML response."""
         try:
             print("⏺️ Recording logic executed in gather handler.")
+            import os
+            #replace with your ngrok URL
+            ngrok_url = os.getenv('NGROK_URL')
             
             # Log the current ngrok URL we're using
-            callback_url = 'https://83cf-2603-8000-5803-1e47-ce2-d7e7-96ec-137e.ngrok-free.app/api/v1/twilio/recording-status'
+            callback_url = f'{ngrok_url}/api/v1/twilio/recording-status'
             print(f"🔗 Recording status callback URL: {callback_url}")
             
             response.record(
