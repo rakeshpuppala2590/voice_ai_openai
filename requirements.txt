@@ -9,3 +9,5 @@ pytest
 google-cloud-storage==2.13.0
 requests==2.31.0
 python-multipart
+agents
+openai-agents

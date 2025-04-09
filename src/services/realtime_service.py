@@ -7,7 +7,9 @@ import asyncio
 import traceback
 from typing import Dict, List, Optional, Callable
 from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
+from agents.mcp import MCPServer, MCPServerStdio
 
+import shutil
 from openai import OpenAI  # Import the OpenAI SDK
 
 
@@ -16,8 +18,6 @@ logger = logging.getLogger(__name__)
 class RealtimeService:
     """Service for interacting with OpenAI Realtime API via WebSockets"""
     
-    # Improve the RealtimeService constructor
-
     def __init__(self, business_type: str = "restaurant"):
         self.api_key = os.getenv("OPENAI_API_KEY")
         if not self.api_key:
@@ -42,12 +42,15 @@ class RealtimeService:
         logger.info(f"Creating RealtimeService with business type: {business_type}")
         self.business_type = business_type
 
+        # Initialize MCP server
+        self.mcp_server = None
+
         # Load system message based on business type
         self.system_message = self._get_system_message(business_type)
-        
-        # Store business-specific data
-        self.collected_info = {}
-        self.menu_items = self._get_menu_items(business_type)
+
+        # Store business-specific data paths
+        self.data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
+
 
     def _get_system_message(self, business_type):
         """Get appropriate system message based on business type"""
@@ -132,190 +135,67 @@ class RealtimeService:
             </context>
             """
 
-    def _get_menu_items(self, business_type):
-        """Get menu items based on business type"""
-        if business_type == "restaurant":
-            return {
-                "appetizers": [
-                    {"name": "Bruschetta", "price": "$9.99", "description": "Toasted bread topped with tomatoes, garlic, and basil"},
-                    {"name": "Calamari", "price": "$12.99", "description": "Lightly fried with marinara sauce"},
-                    {"name": "Spinach Artichoke Dip", "price": "$10.99", "description": "Served with tortilla chips"}
-                ],
-                "entrees": [
-                    {"name": "Filet Mignon", "price": "$32.99", "description": "8oz with garlic mashed potatoes and roasted vegetables"},
-                    {"name": "Grilled Salmon", "price": "$27.99", "description": "With lemon butter sauce and wild rice"},
-                    {"name": "Truffle Pasta", "price": "$23.99", "description": "Fettuccine with creamy truffle sauce and mushrooms"}
-                ],
-                "desserts": [
-                    {"name": "Tiramisu", "price": "$8.99", "description": "Classic Italian dessert"},
-                    {"name": "Chocolate Lava Cake", "price": "$9.99", "description": "With vanilla ice cream"}
-                ]
-            }
-        elif business_type == "salon":
-            return {
-                "haircuts": [
-                    {"name": "Women's Haircut", "price": "$45+", "description": "Includes consultation, cut, and style"},
-                    {"name": "Men's Haircut", "price": "$30+", "description": "Includes consultation and cut"},
-                    {"name": "Children's Haircut", "price": "$25+", "description": "For children under 12"}
-                ],
-                "color": [
-                    {"name": "Single Process Color", "price": "$65+", "description": "All-over color application"},
-                    {"name": "Highlights", "price": "$95+", "description": "Partial or full highlights"},
-                    {"name": "Balayage", "price": "$120+", "description": "Hand-painted highlights for natural look"}
-                ],
-                "treatments": [
-                    {"name": "Deep Conditioning", "price": "$25+", "description": "Repair treatment for damaged hair"},
-                    {"name": "Keratin Treatment", "price": "$250+", "description": "Smoothing treatment, results last 3-5 months"}
-                ]
-            }
-        else:
-            return {}
-        
-    # Add a more structured MCP implementation
-
-    # Update the _get_mcp_tools method to follow the correct format
-
-    def _get_mcp_tools(self, business_type):
-        """Get MCP-compatible tool definitions based on business type"""
-        if business_type == "restaurant":
-            return [
-                {
-                    "type": "function",
-                    "name": "search_menu",  # Name directly at this level
-                    "description": "Search the restaurant menu for specific items or categories",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search term for menu items"
-                            },
-                            "category": {
-                                "type": "string",
-                                "enum": ["appetizers", "entrees", "desserts"],
-                                "description": "Category to search within"
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                },
-                {
-                    "type": "function",
-                    "name": "create_reservation",  # Name directly at this level
-                    "description": "Create a new restaurant reservation",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "name": {
-                                "type": "string",
-                                "description": "Customer name"
-                            },
-                            "date": {
-                                "type": "string",
-                                "description": "Reservation date (YYYY-MM-DD)"
-                            },
-                            "time": {
-                                "type": "string",
-                                "description": "Reservation time (HH:MM)"
-                            },
-                            "party_size": {
-                                "type": "integer",
-                                "description": "Number of people"
-                            },
-                            "special_requests": {
-                                "type": "string",
-                                "description": "Any special requests or dietary restrictions"
-                            }
-                        },
-                        "required": ["name", "date", "time", "party_size"]
-                    }
-                }
-            ]
-        elif business_type == "salon":
-            return [
-                {
-                    "type": "function",
-                    "name": "search_services",  # Name directly at this level
-                    "description": "Search salon services",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search term for services"
-                            },
-                            "category": {
-                                "type": "string",
-                                "enum": ["haircuts", "color", "treatments"],
-                                "description": "Category to search within"
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                },
-                {
-                    "type": "function",
-                    "name": "create_appointment",  # Name directly at this level 
-                    "description": "Create a new salon appointment",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "name": {
-                                "type": "string",
-                                "description": "Client name"
-                            },
-                            "date": {
-                                "type": "string",
-                                "description": "Appointment date (YYYY-MM-DD)"
-                            },
-                            "time": {
-                                "type": "string",
-                                "description": "Appointment time (HH:MM)"
-                            },
-                            "service": {
-                                "type": "string",
-                                "description": "Service requested"
-                            },
-                            "stylist": {
-                                "type": "string",
-                                "description": "Preferred stylist (optional)"
-                            }
-                        },
-                        "required": ["name", "date", "time", "service"]
-                    }
-                }
-            ]
-        else:
-            return []
-        
-    def _format_menu_for_context(self):
-        """Format menu items to be inserted into system message"""
-        formatted_menu = []
-        
-        for category, items in self.menu_items.items():
-            formatted_menu.append(f"{category.upper()}:")
-            for item in items:
-                formatted_menu.append(f"- {item['name']} ({item['price']}): {item['description']}")
-            formatted_menu.append("")  # Empty line between categories
-        
-        return "\n".join(formatted_menu)
     
-    def set_business_type(self, business_type):
-        """Change the business type and update system message and menu items"""
-        self.business_type = business_type
-        self.system_message = self._get_system_message(business_type)
-        self.menu_items = self._get_menu_items(business_type)
+    # Add a more structured MCP implementation
+    async def _setup_mcp_server(self):
+        """Set up the MCP server for the current business type"""
+        # Check if npx is installed
+        if not shutil.which("npx"):
+            logger.warning("npx not installed. MCP functionality will not be available.")
+            return False
+            
+        # Close any existing MCP server
+        if self.mcp_server:
+            await self.mcp_server.aclose()
+            self.mcp_server = None
+            
+        # Set up the data directory path based on business type
+        data_path = os.path.join(self.data_dir, self.business_type)
         
-        # Reset collected info for the new business type
-        self.collected_info = {}
+        # Make sure the directory exists
+        if not os.path.exists(data_path):
+            logger.warning(f"Data directory {data_path} not found. MCP functionality will not be available.")
+            return False
+            
+        try:
+            # Create a new MCP server instance
+            self.mcp_server = MCPServerStdio(
+                name=f"{self.business_type.capitalize()} Data Server",
+                params={
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", data_path],
+                },
+                cache_tools_list=True  # Cache tools for better performance
+            )
+            
+            # Initialize the server
+            await self.mcp_server.__aenter__()
+            
+            # Test by listing tools
+            tools = await self.mcp_server.list_tools()
+            logger.info(f"MCP server initialized with {len(tools)} tools")
+            
+            return True
+        except Exception as e:
+            logger.error(f"Failed to initialize MCP server: {str(e)}")
+            if self.mcp_server:
+                try:
+                    await self.mcp_server.aclose()
+                except:
+                    pass
+                self.mcp_server = None
+            return False
 
-    # Enhance the initialize_session method
-
+    
     async def initialize_session(self, call_sid: str) -> bool:
         """Initialize a realtime session with OpenAI"""
         self.current_call_sid = call_sid
         logger.info(f"Connecting to OpenAI Realtime API for call {call_sid} with business type: {self.business_type}")
 
+        # Set up MCP server
+        mcp_setup_success = await self._setup_mcp_server()
+        if not mcp_setup_success:
+            logger.warning("MCP setup failed, will continue without MCP functionality")
         
         # Connect to OpenAI Realtime API
         try:
@@ -352,19 +232,11 @@ class RealtimeService:
                     logger.error(f"Connection attempt {retry_count} failed: {str(e)}")
                     if retry_count < max_retries:
                         await asyncio.sleep(1.0)  # Wait before retrying
-            
             if not connection_success:
                 logger.error("Failed to connect to OpenAI after multiple attempts")
                 return False
 
-            # Prepare system message with menu items
-            formatted_system_message = self.system_message.replace("{{menu_items}}", self._format_menu_for_context())
-            
-            # Define any tools (function calling)
-            tools = self._get_mcp_tools(self.business_type) if hasattr(self, '_get_mcp_tools') else None
-            
-            # Update session with our configuration
-            # With this corrected version:
+            # Prepare session update
             session_update = {
                 "type": "session.update",
                 "session": {
@@ -376,32 +248,26 @@ class RealtimeService:
                     "input_audio_format": "g711_ulaw",
                     "output_audio_format": "g711_ulaw",
                     "voice": self.voice,
-                    "instructions": formatted_system_message,
+                    "instructions": self.system_message,
                     "modalities": ["text", "audio"],
                     "temperature": 0.7,
                 }
             }
 
-            
-            # Only add tools if we have them and they're properly formatted
-            if tools and isinstance(tools, list) and len(tools) > 0:
-                # Check if tools are already in the correct format for the Realtime API
-                # The API expects tools to have a 'name' property directly, not nested under 'function'
-                if all('function' in tool and 'name' in tool['function'] for tool in tools):
-                    # Convert from the Chat Completions format to Realtime API format
-                    converted_tools = []
-                    for tool in tools:
-                        func = tool['function']
-                        converted_tools.append({
-                            'type': 'function',
-                            'name': func['name'],
-                            'description': func.get('description', ''),
-                            'parameters': func.get('parameters', {})
-                        })
-                    session_update['session']['tools'] = converted_tools
-                else:
-                    # Tools are already in correct format or invalid
-                    session_update['session']['tools'] = tools
+            # If MCP server is set up, get MCP tools
+            if self.mcp_server:
+                try:
+                    mcp_tools = await self.mcp_server.list_tools()
+                    if mcp_tools:
+                        session_update["session"]["mcp_servers"] = [
+                            {
+                                "name": f"{self.business_type.capitalize()} Data Server",
+                                "tools": mcp_tools
+                            }
+                        ]
+                        logger.info(f"Added {len(mcp_tools)} MCP tools to session")
+                except Exception as e:
+                    logger.error(f"Failed to get MCP tools: {str(e)}")
 
             await self.ws_connection.send(json.dumps(session_update))
             
@@ -410,7 +276,6 @@ class RealtimeService:
             
             logger.info(f"Session initialized for call {call_sid} with business type: {self.business_type}")
             return True
-            
         except Exception as e:
             logger.error(f"Failed to initialize session: {str(e)}")
             if self.ws_connection:
@@ -420,51 +285,27 @@ class RealtimeService:
                     pass
                 self.ws_connection = None
             return False
+    
         
-    # Add methods to handle function calls from the AI
+    
+    
 
-    async def _handle_function_call(self, function_name, arguments):
-        """Handle function calls from the model"""
-        logger.info(f"Function call: {function_name} with arguments: {arguments}")
+    def set_business_type(self, business_type):
+            """Change the business type and update system message and MCP server"""
+            # Only update if it's a different business type
+            if self.business_type != business_type:
+                self.business_type = business_type
+                self.system_message = self._get_system_message(business_type)
+                
+                # MCP server will be set up on next session initialization
+                if self.ws_connection:
+                    logger.warning("Business type changed while connection active. Changes will apply on next session.")
+            
+            
         
-        if function_name == "search_menu" and self.business_type == "restaurant":
-            return await self._search_menu(arguments)
-        elif function_name == "create_reservation" and self.business_type == "restaurant":
-            return await self._create_reservation(arguments)
-        elif function_name == "search_services" and self.business_type == "salon":
-            return await self._search_services(arguments)
-        elif function_name == "create_appointment" and self.business_type == "salon":
-            return await self._create_appointment(arguments)
-        else:
-            return {"error": "Function not implemented or not available for this business type"}
 
-    async def _search_menu(self, arguments):
-        """Search the restaurant menu"""
-        query = arguments.get("query", "").lower()
-        category = arguments.get("category")
-        
-        results = []
-        
-        # If category is specified, only search in that category
-        categories_to_search = [category] if category else self.menu_items.keys()
-        
-        for cat in categories_to_search:
-            if cat in self.menu_items:
-                for item in self.menu_items[cat]:
-                    # Search in name and description
-                    if (query in item["name"].lower() or 
-                        query in item["description"].lower()):
-                        results.append({
-                            "name": item["name"],
-                            "price": item["price"],
-                            "description": item["description"],
-                            "category": cat
-                        })
-        
-        return {"results": results, "count": len(results)}
 
-    # Implement the remaining functions similarly
-
+   
 
     async def send_initial_prompt(self):
         """Send initial prompt to start the conversation"""
@@ -474,22 +315,18 @@ class RealtimeService:
         
         try:
             # Create a conversation item with a greeting prompt
-            initial_conversation_item = {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
+            initial_message = {
+                "type": "message.create",
+                "message": {
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": "Please greet the user and ask for their name."
-                        }
-                    ]
+                    "content": "Hi, I'd like to make a reservation."
+                    if self.business_type == "restaurant" else
+                    "Hello, I'd like to make an appointment."
                 }
             }
             
             # Send the conversation item
-            await self.ws_connection.send(json.dumps(initial_conversation_item))
+            await self.ws_connection.send(json.dumps(initial_message))
             
             # Create a response
             await self.ws_connection.send(json.dumps({"type": "response.create"}))
@@ -522,13 +359,20 @@ class RealtimeService:
             logger.error(f"Failed to process audio chunk: {str(e)}")
     
     async def close_session(self) -> None:
-        """Close the WebSocket connection"""
-        if self.ws_connection:
-            try:
+        """Close the realtime session"""
+        try:
+            if self.ws_connection:
                 await self.ws_connection.close()
-                logger.info(f"Closed WebSocket connection for call {self.current_call_sid}")
-            except Exception as e:
-                logger.error(f"Error closing WebSocket: {str(e)}")
+                self.ws_connection = None
+                
+            # Close MCP server if active
+            if self.mcp_server:
+                await self.mcp_server.aclose()
+                self.mcp_server = None
+                
+            logger.info(f"Closed session for call {self.current_call_sid}")
+        except Exception as e:
+            logger.error(f"Error closing session: {str(e)}")
     
     def get_twilio_stream_url(self, ngrok_url: str) -> str:
         """
