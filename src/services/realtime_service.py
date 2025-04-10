@@ -7,8 +7,11 @@ import asyncio
 import traceback
 from typing import Dict, List, Optional, Callable
 from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
+from openai import OpenAI  
+import shutil
 
-from openai import OpenAI  # Import the OpenAI SDK
+from agents import Agent, Runner, gen_trace_id, trace
+from agents.mcp import MCPServer, MCPServerStdio
 
 
 logger = logging.getLogger(__name__)
@@ -34,6 +37,8 @@ class RealtimeService:
         
         # Normalize and validate business_type
         business_type = business_type.lower() if business_type else "restaurant"
+
+
         if business_type not in ["restaurant", "salon"]:
             logger.warning(f"Invalid business type: {business_type}, defaulting to restaurant")
             business_type = "restaurant"
@@ -47,258 +52,215 @@ class RealtimeService:
         
         # Store business-specific data
         self.collected_info = {}
-        self.menu_items = self._get_menu_items(business_type)
+
+        self.menu_items = self._get_default_menu_items(business_type)
+        
+        asyncio.create_task(self._update_menu_items(business_type))
+    
+    async def _update_menu_items(self, business_type):
+        """Update menu items asynchronously using MCP"""
+        try:
+            mcp_data = await self.get_mcp(business_type)
+            if mcp_data:
+                self.menu_items = mcp_data
+                logger.info(f"Successfully updated menu items for {business_type} using MCP")
+        except Exception as e:
+            logger.error(f"Failed to update menu items: {str(e)}")
+            logger.error(traceback.format_exc())
+
+    # Replace your current get_mcp function with this:
+    async def get_mcp(self, business_type):
+        """Get menu items using MCP to read files"""
+        try:
+            # Fix the path construction
+            current_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            relevant_dir = os.path.join(current_dir, "sample_files", business_type)
+            
+            logger.info(f"Loading data from directory: {relevant_dir}")
+            
+            # Make sure the directory exists
+            if not os.path.exists(relevant_dir):
+                logger.error(f"Directory not found: {relevant_dir}")
+                return self._get_default_menu_items(business_type)
+            
+            # Define a nested async function to run with the MCP server
+            async def run_with_server(server):
+                agent = Agent(
+                    name="MenuReader",
+                    instructions=f"Read the {business_type} files and extract all menu/service items with prices.",
+                    mcp_servers=[server],
+                )
+                
+                # Create query based on business type
+                if business_type == "restaurant":
+                    query = "Extract all menu items with their prices from the restaurant.txt file as JSON"
+                else:
+                    query = "Extract all salon services with their prices from the salon.txt file as JSON"
+                    
+                # Get results
+                result = await Runner.run(starting_agent=agent, input=query)
+                return result.final_output
+            
+            # Create and use the MCP server
+            async with MCPServerStdio(
+                name="Filesystem Server",
+                params={
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", relevant_dir],
+                },
+            ) as server:
+                trace_id = gen_trace_id()
+                with trace(workflow_name="Menu Extraction", trace_id=trace_id):
+                    logger.info(f"View trace: https://platform.openai.com/traces/trace?trace_id={trace_id}")
+                    return await run_with_server(server)
+                    
+        except Exception as e:
+            logger.error(f"Error in get_mcp: {str(e)}")
+            logger.error(traceback.format_exc())
+
+            
+            return self._get_default_menu_items(business_type)
+
+    # Add this helper method to provide defaults when MCP fails
+    def _get_default_menu_items(self, business_type):
+        """Get default menu items if MCP fails"""
+        if business_type == "restaurant":
+            return """
+            APPETIZERS:
+            - Vegetable Samosa ($5.99): 2 pieces of crispy pastry filled with spiced potatoes and peas
+            - Paneer Pakora ($7.99): Cottage cheese fritters served with mint chutney
+            - Chicken 65 ($9.99): Spicy fried chicken pieces with curry leaves
+            
+            MAIN COURSES:
+            - Paneer Butter Masala ($12.99): Cottage cheese cubes in creamy tomato sauce
+            - Butter Chicken ($13.99): Tender chicken in rich tomato and butter sauce
+            - Lamb Rogan Josh ($15.99): Slow-cooked lamb in aromatic Kashmiri spices
+            
+            DESSERTS:
+            - Gulab Jamun ($4.99): Sweet milk dumplings soaked in rose-flavored syrup
+            - Mango Kulfi ($4.49): Traditional Indian ice cream with mango flavor
+            """
+        elif business_type == "salon":
+            return """
+            HAIRCUTS:
+            - Women's Haircut ($45): Includes consultation, cut and style
+            - Men's Haircut ($30): Includes consultation, cut and style
+            
+            HAIR TREATMENTS:
+            - Hair Coloring ($75+): Full hair color service
+            - Highlights ($95+): Partial or full highlighting
+            
+            NAIL SERVICES:
+            - Manicure ($25): Nail shaping, cuticle care and polish
+            - Pedicure ($35): Foot soak, exfoliation, nail care and polish
+            """
+        else:
+            return "No menu items available for this business type."
+        
 
     def _get_system_message(self, business_type):
-        """Get appropriate system message based on business type"""
-        if business_type == "restaurant":
-            logger.info("Using RESTAURANT system message")
-            return """
-            <context>
-            You are a friendly restaurant reservation assistant for "Gourmet Delights". 
-            Your name is Alex.
-            
-            RESTAURANT INFORMATION:
-            - Name: Gourmet Delights
-            - Hours: Monday-Thursday 11am-10pm, Friday-Sunday 11am-11pm
-            - Address: 123 Main Street, Anytown, CA
-            - Phone: (555) 123-4567
-            - Website: gourmetdelights.com
-            
-            MENU ITEMS:
-            {{menu_items}}
-            
-            RESERVATION PROTOCOL:
-            1. Start by greeting the caller and asking for their name.
-            2. Ask for date and time preference for their reservation.
-            3. Ask for party size.
-            4. Ask if they have any dietary restrictions or special requests.
-            5. Summarize all collected information and confirm the reservation details.
-            
-            INTERACTION RULES:
-            - Be concise and conversational
-            - Ask only ONE question at a time
-            - Wait for the caller to respond before proceeding to next question
-            - If the caller asks about menu items, provide information from the MENU ITEMS section
-            - If the caller wants to change any details, accommodate their request
-            - Do not make up information not provided in your context
-            </context>
-            """
-        elif business_type == "salon":
-            logger.info("Using SALON system message")
+            """Get appropriate system message based on business type"""
+            if business_type == "restaurant":
+                logger.info("Using RESTAURANT system message")
+                return """
+                <context>
+                You are a friendly restaurant reservation assistant for "Gourmet Delights". 
+                Your name is Alex.
+                
+                RESTAURANT INFORMATION:
+                - Name: Gourmet Delights
+                - Hours: Monday-Thursday 11am-10pm, Friday-Sunday 11am-11pm
+                - Address: 123 Main Street, Anytown, CA
+                - Phone: (555) 123-4567
+                - Website: gourmetdelights.com
+                
+                MENU ITEMS:
+                {{menu_items}}
+                
+                RESERVATION PROTOCOL:
+                1. Start by greeting the caller and asking for their name.
+                2. Ask for date and time preference for their reservation.
+                3. Ask for party size.
+                4. Ask if they have any dietary restrictions or special requests.
+                5. Summarize all collected information and confirm the reservation details.
+                
+                INTERACTION RULES:
+                - Be concise and conversational
+                - Ask only ONE question at a time
+                - Wait for the caller to respond before proceeding to next question
+                - If the caller asks about menu items, provide information from the MENU ITEMS section
+                - If the caller wants to change any details, accommodate their request
+                - Do not make up information not provided in your context
+                </context>
+                """
+            elif business_type == "salon":
+                logger.info("Using SALON system message")
 
-            return """
-            <context>
-            You are a friendly hair salon appointment scheduler for "Elegant Styles". 
-            Your name is Jordan.
-            
-            SALON INFORMATION:
-            - Name: Elegant Styles
-            - Hours: Tuesday-Saturday 9am-7pm, Sunday 10am-4pm, Closed on Mondays
-            - Address: 456 Style Avenue, Anytown, CA
-            - Phone: (555) 789-0123
-            - Website: elegantstyles.com
-             
-            SERVICES:
-            {{menu_items}}
-            
-            APPOINTMENT PROTOCOL:
-            1. Start by greeting the caller and asking for their name.
-            2. Ask what service they're interested in booking.
-            3. Ask for date and time preference for their appointment.
-            4. Ask if they have a preferred stylist or if this is their first visit.
-            5. Summarize all collected information and confirm the appointment details.
-            
-            INTERACTION RULES:
-            - Be concise and conversational
-            - Ask only ONE question at a time
-            - Wait for the caller to respond before proceeding to next question
-            - If the caller asks about services, provide information from the SERVICES section
-            - If the caller wants to change any details, accommodate their request
-            - Do not make up information not provided in your context
-            </context>
-            """
-        else:
-            # Default generic system message
-            return """
-            <context>
-            You are a friendly call center agent. Start by greeting the caller and asking for their name.
-            
-            INTERACTION RULES:
-            - Be concise and conversational
-            - Ask only ONE question at a time
-            - Wait for the caller to respond before proceeding to next question
-            - Keep responses brief and clear
-            </context>
-            """
-
-    def _get_menu_items(self, business_type):
-        """Get menu items based on business type"""
-        if business_type == "restaurant":
-            return {
-                "appetizers": [
-                    {"name": "Bruschetta", "price": "$9.99", "description": "Toasted bread topped with tomatoes, garlic, and basil"},
-                    {"name": "Calamari", "price": "$12.99", "description": "Lightly fried with marinara sauce"},
-                    {"name": "Spinach Artichoke Dip", "price": "$10.99", "description": "Served with tortilla chips"}
-                ],
-                "entrees": [
-                    {"name": "Filet Mignon", "price": "$32.99", "description": "8oz with garlic mashed potatoes and roasted vegetables"},
-                    {"name": "Grilled Salmon", "price": "$27.99", "description": "With lemon butter sauce and wild rice"},
-                    {"name": "Truffle Pasta", "price": "$23.99", "description": "Fettuccine with creamy truffle sauce and mushrooms"}
-                ],
-                "desserts": [
-                    {"name": "Tiramisu", "price": "$8.99", "description": "Classic Italian dessert"},
-                    {"name": "Chocolate Lava Cake", "price": "$9.99", "description": "With vanilla ice cream"}
-                ]
-            }
-        elif business_type == "salon":
-            return {
-                "haircuts": [
-                    {"name": "Women's Haircut", "price": "$45+", "description": "Includes consultation, cut, and style"},
-                    {"name": "Men's Haircut", "price": "$30+", "description": "Includes consultation and cut"},
-                    {"name": "Children's Haircut", "price": "$25+", "description": "For children under 12"}
-                ],
-                "color": [
-                    {"name": "Single Process Color", "price": "$65+", "description": "All-over color application"},
-                    {"name": "Highlights", "price": "$95+", "description": "Partial or full highlights"},
-                    {"name": "Balayage", "price": "$120+", "description": "Hand-painted highlights for natural look"}
-                ],
-                "treatments": [
-                    {"name": "Deep Conditioning", "price": "$25+", "description": "Repair treatment for damaged hair"},
-                    {"name": "Keratin Treatment", "price": "$250+", "description": "Smoothing treatment, results last 3-5 months"}
-                ]
-            }
-        else:
-            return {}
-        
-    # Add a more structured MCP implementation
-
-    # Update the _get_mcp_tools method to follow the correct format
-
-    def _get_mcp_tools(self, business_type):
-        """Get MCP-compatible tool definitions based on business type"""
-        if business_type == "restaurant":
-            return [
-                {
-                    "type": "function",
-                    "name": "search_menu",  # Name directly at this level
-                    "description": "Search the restaurant menu for specific items or categories",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search term for menu items"
-                            },
-                            "category": {
-                                "type": "string",
-                                "enum": ["appetizers", "entrees", "desserts"],
-                                "description": "Category to search within"
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                },
-                {
-                    "type": "function",
-                    "name": "create_reservation",  # Name directly at this level
-                    "description": "Create a new restaurant reservation",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "name": {
-                                "type": "string",
-                                "description": "Customer name"
-                            },
-                            "date": {
-                                "type": "string",
-                                "description": "Reservation date (YYYY-MM-DD)"
-                            },
-                            "time": {
-                                "type": "string",
-                                "description": "Reservation time (HH:MM)"
-                            },
-                            "party_size": {
-                                "type": "integer",
-                                "description": "Number of people"
-                            },
-                            "special_requests": {
-                                "type": "string",
-                                "description": "Any special requests or dietary restrictions"
-                            }
-                        },
-                        "required": ["name", "date", "time", "party_size"]
-                    }
-                }
-            ]
-        elif business_type == "salon":
-            return [
-                {
-                    "type": "function",
-                    "name": "search_services",  # Name directly at this level
-                    "description": "Search salon services",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search term for services"
-                            },
-                            "category": {
-                                "type": "string",
-                                "enum": ["haircuts", "color", "treatments"],
-                                "description": "Category to search within"
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                },
-                {
-                    "type": "function",
-                    "name": "create_appointment",  # Name directly at this level 
-                    "description": "Create a new salon appointment",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "name": {
-                                "type": "string",
-                                "description": "Client name"
-                            },
-                            "date": {
-                                "type": "string",
-                                "description": "Appointment date (YYYY-MM-DD)"
-                            },
-                            "time": {
-                                "type": "string",
-                                "description": "Appointment time (HH:MM)"
-                            },
-                            "service": {
-                                "type": "string",
-                                "description": "Service requested"
-                            },
-                            "stylist": {
-                                "type": "string",
-                                "description": "Preferred stylist (optional)"
-                            }
-                        },
-                        "required": ["name", "date", "time", "service"]
-                    }
-                }
-            ]
-        else:
-            return []
-        
+                return """
+                <context>
+                You are a friendly hair salon appointment scheduler for "Elegant Styles". 
+                Your name is Jordan.
+                
+                SALON INFORMATION:
+                - Name: Elegant Styles
+                - Hours: Tuesday-Saturday 9am-7pm, Sunday 10am-4pm, Closed on Mondays
+                - Address: 456 Style Avenue, Anytown, CA
+                - Phone: (555) 789-0123
+                - Website: elegantstyles.com
+                
+                SERVICES:
+                {{menu_items}}
+                
+                APPOINTMENT PROTOCOL:
+                1. Start by greeting the caller and asking for their name.
+                2. Ask what service they're interested in booking.
+                3. Ask for date and time preference for their appointment.
+                4. Ask if they have a preferred stylist or if this is their first visit.
+                5. Summarize all collected information and confirm the appointment details.
+                
+                INTERACTION RULES:
+                - Be concise and conversational
+                - Ask only ONE question at a time
+                - Wait for the caller to respond before proceeding to next question
+                - If the caller asks about services, provide information from the SERVICES section
+                - If the caller wants to change any details, accommodate their request
+                - Do not make up information not provided in your context
+                </context>
+                """
+            else:
+                # Default generic system message
+                return """
+                <context>
+                You are a friendly call center agent. Start by greeting the caller and asking for their name.
+                
+                INTERACTION RULES:
+                - Be concise and conversational
+                - Ask only ONE question at a time
+                - Wait for the caller to respond before proceeding to next question
+                - Keep responses brief and clear
+                </context>
+                """
+                    
     def _format_menu_for_context(self):
         """Format menu items to be inserted into system message"""
-        formatted_menu = []
+        # If menu_items is already a string, return it directly
+        if isinstance(self.menu_items, str):
+            return self.menu_items
+            
+        # If it's a dict (due to the default values), format it
+        if isinstance(self.menu_items, dict):
+            formatted_menu = []
+            
+            for category, items in self.menu_items.items():
+                formatted_menu.append(f"{category.upper()}:")
+                for item in items:
+                    formatted_menu.append(f"- {item['name']} ({item['price']}): {item['description']}")
+                formatted_menu.append("")  # Empty line between categories
+            
+            return "\n".join(formatted_menu)
         
-        for category, items in self.menu_items.items():
-            formatted_menu.append(f"{category.upper()}:")
-            for item in items:
-                formatted_menu.append(f"- {item['name']} ({item['price']}): {item['description']}")
-            formatted_menu.append("")  # Empty line between categories
-        
-        return "\n".join(formatted_menu)
+        # If it's something else, convert to string
+        return str(self.menu_items)
     
     def set_business_type(self, business_type):
         """Change the business type and update system message and menu items"""

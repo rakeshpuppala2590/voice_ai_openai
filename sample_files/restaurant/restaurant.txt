@@ -1,0 +1,50 @@
+Restaurant Name: Spice Garden Indian Bistro  
+Address: 789 Curry Lane, Irvine, CA 92618  
+Phone: (949) 123-4567  
+Website: www.spicegardenbistro.com  
+
+----------------------------
+MENU 
+----------------------------
+
+APPETIZERS  
+- Vegetable Samosa (2 pcs) .................. $5.99  
+- Paneer Pakora .............................. $7.99  
+- Chicken 65 ................................ $9.99  
+- Gobi Manchurian ............................ $8.99  
+
+MAIN COURSES  
+VEGETARIAN  
+- Paneer Butter Masala ....................... $12.99  
+- Chana Masala ............................... $11.99  
+- Baingan Bharta ............................. $12.49  
+- Dal Tadka .................................. $10.99  
+
+NON-VEGETARIAN  
+- Butter Chicken ............................. $13.99  
+- Chicken Biryani ............................ $14.99  
+- Lamb Rogan Josh ............................ $15.99  
+- Fish Curry ................................ $13.49  
+
+BREADS & RICE  
+- Naan (Plain/Garlic/Butter) ................. $2.99  
+- Tandoori Roti ............................... $2.49  
+- Jeera Rice .................................. $3.99  
+- Vegetable Pulao ............................. $6.99  
+
+DESSERTS  
+- Gulab Jamun (2 pcs) .......................... $4.99  
+- Rasmalai (2 pcs) ............................. $5.49  
+- Mango Kulfi ................................ $4.49  
+
+BEVERAGES  
+- Mango Lassi ................................ $3.99  
+- Masala Chai ................................ $2.99  
+- Soft Drinks ................................ $1.99  
+- Bottled Water .............................. $1.49  
+
+----------------------------
+DINE-IN | TAKEOUT | DELIVERY  
+Lunch Combo Deals (Mon–Fri, 11 AM–2 PM)  
+Order Online at www.spicegardenbistro.com  
+----------------------------
